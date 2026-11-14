@@ -1,0 +1,19 @@
+name: Bayes-PFL
+_target_: baselines.bayespfl.BayesPFL
+repo_url: https://github.com/xiaozhen228/Bayes-PFL.git
+repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/Bayes-PFL
+checkpoint: visa   # key of `checkpoints` (Google Drive file ids): auxiliary training set; no medical-trained one is released
+checkpoints:
+  visa: 1rNs_rdTmrg4JshmKHotq6AN1gqTpPjvm
+  mvtec: 1EHa4jPi7r8jmRVURoZ4yH2-jqDt6K1Ni
+  medical: null
+class_name: object   # prompted as "X <class name>"; overridden per modality by scripts/run_baseline.py
+device: auto
+image_size: 518
+features_list: [6, 12, 18, 24]
+prompt_context_len: 5
+prompt_num: 3
+prompt_state_len: 5
+sample_num: 10
+num_flows: 10
+seed: 333

@@ -36,6 +36,40 @@ def prepare_repo(url: str, repo_dir: str) -> Path:
     return path
 
 
+def use_package(name: str, path: Path) -> None:
+    """Make `import name` resolve to the folder `path` of a vendored repo. Needed when the repo's folder has no
+    __init__.py (a namespace package) or shares its name with a package of this project (models, datasets)."""
+    for key in [key for key in sys.modules if key == name or key.startswith(name + ".")]:
+        del sys.modules[key]
+    module = types.ModuleType(name)
+    module.__path__ = [str(path)]
+    sys.modules[name] = module
+
+
+def redirect_cuda(device: str) -> None:
+    """Send the hardcoded `.cuda()` / `.to("cuda")` calls of a vendored repo to `device` when it is not CUDA."""
+    if device.startswith("cuda") or getattr(torch.Tensor, "_cuda_redirect", False):
+        return
+    to, cuda = torch.Tensor.to, torch.Tensor.cuda
+
+    def redirected_to(self, *args, **kwargs):
+        if args and isinstance(args[0], (str, torch.device)) and str(args[0]).startswith("cuda"):
+            args = (device, *args[1:])
+        if str(kwargs.get("device", "")).startswith("cuda"):
+            kwargs["device"] = device
+        return to(self, *args, **kwargs)
+
+    torch.Tensor.to = redirected_to
+    torch.Tensor.cuda = lambda self, *args, **kwargs: to(self, device)
+    torch.Tensor._cuda_redirect = True
+
+
+def download_openai_clip(name: str, root: Path) -> Path:
+    """Path of the OpenAI CLIP checkpoint `name` (e.g. ViT-L/14@336px), downloaded into `root` if missing."""
+    import clip
+    return Path(clip.clip._download(clip.clip._MODELS[name], str(root)))
+
+
 def select_checkpoint(checkpoint: str, checkpoints: dict, method: str):
     """The entry of `checkpoints` named `checkpoint`; fails clearly if the authors released none."""
     if checkpoint not in checkpoints:
