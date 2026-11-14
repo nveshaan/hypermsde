@@ -1,0 +1,18 @@
+name: DPMM
+_target_: baselines.dpmm.DPMM
+repo_url: https://github.com/NicoSchulthess/anomalydino-dpmm.git
+repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/anomalydino-dpmm
+device: auto
+# The authors' config/*_diag.yaml
+backbone: dinov2_vits14
+resolution: 448            # smaller image edge
+max_num_components: 500
+update_rate: 0.2
+schedule: ema
+covariance_type: diag
+covariance_regularization: 1.0e-6
+epochs: 40
+batch_size: 12             # images per DPMM update step
+weight_threshold: 1.0e-6   # components with smaller weight are ignored when scoring
+top_fraction: 0.01         # image score: mean of the top 1% patch scores (AnomalyDINO); not in the DPMM code
+seed: 0
