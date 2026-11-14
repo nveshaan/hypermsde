@@ -120,7 +120,8 @@ class MediCLIP:
         self.prompt_maker.train()
         for _ in range(cfg.epoch):
             for batch in loader:
-                x, mask = batch["image"].to(self.device), batch["mask"].to(self.device)
+                # The synthesised masks are float64, which MPS does not support.
+                x, mask = batch["image"].to(self.device), batch["mask"].float().to(self.device)
                 with torch.no_grad():
                     _, tokens = self.clip.encode_image(x, out_layers=cfg.layers_out)
                     features = self.necker(tokens)
