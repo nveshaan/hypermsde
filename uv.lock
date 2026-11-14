@@ -651,6 +651,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "addict" },
     { name = "clip" },
+    { name = "diffusers" },
     { name = "einops" },
     { name = "fvcore" },
     { name = "gdown" },
@@ -697,6 +698,7 @@ dependencies = [
 requires-dist = [
     { name = "addict", specifier = ">=2.4.0" },
     { name = "clip", git = "https://github.com/openai/CLIP.git" },
+    { name = "diffusers", specifier = ">=0.43.0" },
     { name = "einops", specifier = ">=0.8.2" },
     { name = "fvcore", specifier = ">=0.1.5.post20221221" },
     { name = "gdown", specifier = ">=5.2.0" },
@@ -737,6 +739,25 @@ requires-dist = [
     { name = "umap-learn", specifier = ">=0.5.12" },
     { name = "wget", specifier = ">=3.2" },
     { name = "yapf", specifier = ">=0.43.0" },
+]
+
+[[package]]
+name = "diffusers"
+version = "0.43.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "filelock" },
+    { name = "huggingface-hub" },
+    { name = "importlib-metadata" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "regex" },
+    { name = "requests" },
+    { name = "safetensors" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/70/73/5c04831659fc448c7cba0cc12b99c1dfed69c3069f93159589c91cee6840/diffusers-0.43.0.tar.gz", hash = "sha256:09b997c0e3ec775caf0604313613f7b64513dae1d54a9a083a4f2112072e539c", size = 5389433, upload-time = "2026-11-12T05:18:33.725Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/11/c07b85f2de44a3b554531e8f6d227082faf4cbd2715b0d35fbe64ae202be/diffusers-0.43.0-py3-none-any.whl", hash = "sha256:8afb8ff1b09d693854de0412d8bdc94fc9e6e6e4efefb2386c616f64a4dc9ac6", size = 6518637, upload-time = "2026-11-12T05:18:31.328Z" },
 ]
 
 [[package]]

@@ -1,0 +1,22 @@
+name: AnomaMed
+_target_: baselines.anomamed.AnomaMed
+# Reimplemented from the paper (no released code); Table 1 values unless marked "not in paper".
+clip_model: ViT-L/14
+layers: [12, 20, 24]
+image_size: 224
+n_ctx: 12                          # learnable prompt tokens M
+class_names: [healthy, disease]
+epochs: 200
+batch_size: 8
+seed: 100
+n_heads: 8                         # not in paper
+temperature: 0.07                  # not in paper (tau; CLIP's)
+lr: 1.0e-3                         # not in paper (Adam; MediCLIP's)
+normal_fraction: 0.5               # not in paper: share of training samples left normal (mask 0)
+ddpm: google/ddpm-celebahq-256     # not in paper: "pre-trained DDPM" is not named
+ddpm_t: 250                        # not in paper: diffusion step the support image is noised to
+strength: [0.5, 2.0]               # not in paper: anomaly strength s, drawn uniformly
+opacity: [0.5, 1.0]                # not in paper: blending opacity delta, drawn uniformly
+perlin_threshold: 0.5              # not in paper
+perlin_max_scale: 6                # not in paper: Perlin periods 2^[0, 6)
+device: auto
