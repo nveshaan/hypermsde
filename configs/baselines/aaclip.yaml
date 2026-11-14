@@ -1,0 +1,17 @@
+name: AA-CLIP
+_target_: baselines.aaclip.AACLIP
+repo_url: https://github.com/Mwxinnn/AA-CLIP.git
+repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/AA-CLIP
+# No released weights: the folder (relative to the repo) that scripts/train_aaclip.py trains into, full shot on
+# VisA as in the authors' scripts.sh. The last image_adapter_<epoch>.pth is used.
+checkpoint: ckpt/visa_full
+class_name: object   # overridden per modality by scripts/run_baseline.py
+device: auto
+image_size: 518
+text_adapt_weight: 0.1
+image_adapt_weight: 0.1
+text_adapt_until: 3
+image_adapt_until: 6
+relu: false
+batch_size: 8
+seed: 111
