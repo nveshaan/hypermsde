@@ -83,7 +83,8 @@ class PromptLearner(nn.Module):
         self.ctx = nn.Parameter(torch.randn(n_ctx, width) * 0.02)
         self.attention = nn.MultiheadAttention(width, n_heads, batch_first=True)
         prefix = " ".join(["X"] * n_ctx)
-        self.register_buffer("tokens", clip.tokenize([f"{prefix} {name}." for name in class_names]))
+        device = clip_model.token_embedding.weight.device
+        self.register_buffer("tokens", clip.tokenize([f"{prefix} {name}." for name in class_names]).to(device))
         with torch.no_grad():
             embedding = clip_model.token_embedding(self.tokens).float()
         self.register_buffer("prefix", embedding[:, :1])          # SOS
@@ -99,7 +100,7 @@ class PromptLearner(nn.Module):
         x = x + clip_model.positional_embedding.float()
         x = clip_model.transformer(x.permute(1, 0, 2)).permute(1, 0, 2)
         x = clip_model.ln_final(x).float()
-        x = x[torch.arange(n), self.tokens.argmax(dim=-1)] @ clip_model.text_projection.float()
+        x = x[torch.arange(n, device=x.device), self.tokens.argmax(dim=-1)] @ clip_model.text_projection.float()
         return F.normalize(x, dim=-1)  # (2, C): A_n, A_a
 
 
