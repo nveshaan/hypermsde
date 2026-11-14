@@ -9,4 +9,5 @@ multirun.yaml
 
 data/
 !configs/*
-experiments//*.pdf
+experiments/
+/*.pdf
