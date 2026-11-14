@@ -24,6 +24,24 @@ modality: null
 encoder: null
 dataset: null
 overwrite: false
+text_only: false   # true: embed the normal/abnormal prompts below instead of the images
+
+# Prompt ensemble for the cosine-softmax detector (scripts/run_detector.py detector=cosine_text):
+# every template filled with every state of the modality's class name, averaged per state.
+text:
+  class_names:
+    chest: chest X-ray
+    fundus: retinal fundus image
+    mri: brain MRI
+    oct: retinal OCT
+  states:
+    normal: ["normal {}", "healthy {}", "{} without abnormality", "{} with no disease"]
+    abnormal: ["abnormal {}", "unhealthy {}", "{} with an abnormality", "{} with disease"]
+  templates:
+    - "a photo of a {}."
+    - "an image of a {}."
+    - "a medical image of a {}."
+    - "this is a {}."
 
 runtime:
   batch_size: 16

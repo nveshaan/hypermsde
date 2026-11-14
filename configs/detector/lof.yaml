@@ -1,0 +1,7 @@
+# Local outlier factor (k capped at the support size - 1).
+name: lof
+fn:
+  _target_: baselines.detectors.lof
+  _partial_: true
+  k: 20
+  metric: cosine

@@ -8,6 +8,7 @@ configs/embeddings.yaml.
 Outputs:
     data/<modality>/<dataset_name>/<encoder>_embeds.npy
     data/<modality>/<dataset_name>/labels.npy
+    data/<modality>/<encoder>_text.npz   (with text_only=true: normal and abnormal prompt embeddings)
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ class Encoder:
     model: Any
     preprocess: Callable
     encode_batch: Callable[[torch.Tensor], Any]
+    encode_text: Callable[[list[str]], Any]
 
 
 def project_path(value: str | Path) -> Path:
@@ -170,7 +172,12 @@ def load_medimageinsight(device: torch.device, config: dict[str, Any]) -> Encode
     def encode_batch(images: torch.Tensor) -> torch.Tensor:
         return classifier.model.encode_image(images.to(device))
 
-    return Encoder("MedImageInsight", classifier.model, classifier.preprocess, encode_batch)
+    def encode_text(texts: list[str]) -> torch.Tensor:
+        tokens = classifier.tokenize(texts, padding="max_length", max_length=classifier.max_length,
+                                     truncation=True, return_tensors="pt")
+        return classifier.model.encode_text({k: v.to(device) for k, v in tokens.items()})
+
+    return Encoder("MedImageInsight", classifier.model, classifier.preprocess, encode_batch, encode_text)
 
 
 def load_medsiglip(device: torch.device, config: dict[str, Any]) -> Encoder:
@@ -218,7 +225,11 @@ def load_medsiglip(device: torch.device, config: dict[str, Any]) -> Encoder:
             )
         return features
 
-    return Encoder("MedSigLIP", model, preprocess, encode_batch)
+    def encode_text(texts: list[str]) -> torch.Tensor:
+        inputs = processor(text=texts, padding="max_length", return_tensors="pt").to(device)
+        return output_tensor(model.get_text_features(**inputs))
+
+    return Encoder("MedSigLIP", model, preprocess, encode_batch, encode_text)
 
 
 def _purge_open_clip_modules(unimed_repo_dir: Path) -> None:
@@ -271,7 +282,12 @@ def load_biomedclip(
     def encode_batch(images: torch.Tensor) -> torch.Tensor:
         return model.encode_image(images.to(device))
 
-    return Encoder("BiomedCLIP", model, preprocess, encode_batch)
+    tokenizer = open_clip.get_tokenizer(config["model_name"])
+
+    def encode_text(texts: list[str]) -> torch.Tensor:
+        return model.encode_text(tokenizer(texts).to(device))
+
+    return Encoder("BiomedCLIP", model, preprocess, encode_batch, encode_text)
 
 
 def ensure_unimed_repo(config: dict[str, Any]) -> Path:
@@ -339,7 +355,7 @@ def load_unimedclip(device: torch.device, config: dict[str, Any]) -> Encoder:
     for name in list(sys.modules):
         if name == "open_clip" or name.startswith("open_clip."):
             del sys.modules[name]
-    from open_clip import create_model_and_transforms, get_mean_std
+    from open_clip import HFTokenizer, create_model_and_transforms, get_mean_std
 
     weights_path = hf_hub_download(
         repo_id=config["hf_repo"], filename=config["hf_filename"]
@@ -375,7 +391,12 @@ def load_unimedclip(device: torch.device, config: dict[str, Any]) -> Encoder:
     def encode_batch(images: torch.Tensor) -> torch.Tensor:
         return model.encode_image(images.to(device))
 
-    return Encoder("UniMedCLIP", model, preprocess, encode_batch)
+    tokenizer = HFTokenizer(config["text_encoder_name"], context_length=256)
+
+    def encode_text(texts: list[str]) -> torch.Tensor:
+        return model.encode_text(torch.cat([tokenizer(text) for text in texts]).to(device))
+
+    return Encoder("UniMedCLIP", model, preprocess, encode_batch, encode_text)
 
 
 def load_clip(device: torch.device, config: dict[str, Any]) -> Encoder:
@@ -390,7 +411,10 @@ def load_clip(device: torch.device, config: dict[str, Any]) -> Encoder:
     def encode_batch(images: torch.Tensor) -> torch.Tensor:
         return model.encode_image(images.to(device))
 
-    return Encoder("CLIP", model, preprocess, encode_batch)
+    def encode_text(texts: list[str]) -> torch.Tensor:
+        return model.encode_text(clip.tokenize(texts).to(device))
+
+    return Encoder("CLIP", model, preprocess, encode_batch, encode_text)
 
 
 def load_encoder(name: str, device: torch.device, settings: dict[str, Any]) -> Encoder:
@@ -601,6 +625,40 @@ def generate_for_encoder(
         unload_encoder(encoder, device)
 
 
+def text_prompts(class_name: str, states: list[str], templates: list[str]) -> list[str]:
+    return [template.format(state.format(class_name)) for state in states for template in templates]
+
+
+@torch.no_grad()
+def generate_text_for_encoder(
+    name: str, modalities: list[str], device: torch.device, overwrite: bool, settings: dict[str, Any]
+) -> None:
+    """Embed the normal and abnormal prompts of every modality (for the cosine-softmax detector)."""
+    text_cfg = settings["text"]
+    output_root = project_path(settings["output_root"])
+    paths = {m: output_root / m / f"{safe_name(name)}_text.npz" for m in modalities}
+    todo = [m for m in modalities if overwrite or not paths[m].exists()]
+    if not todo:
+        print(f"{name}: text embeddings cached")
+        return
+    print(f"Loading {name} on {device}...")
+    encoder = load_encoder(name, device, settings)
+    try:
+        for modality in todo:
+            out = {}
+            for state in ("normal", "abnormal"):
+                prompts = text_prompts(text_cfg["class_names"][modality], text_cfg["states"][state],
+                                       text_cfg["templates"])
+                features = output_tensor(encoder.encode_text(prompts)).float()
+                out[state] = F.normalize(features, dim=-1).cpu().numpy()
+                out[f"{state}_prompts"] = np.asarray(prompts)
+            paths[modality].parent.mkdir(parents=True, exist_ok=True)
+            np.savez(paths[modality], **out)
+            print(f"  saved {paths[modality]}")
+    finally:
+        unload_encoder(encoder, device)
+
+
 @hydra.main(version_base=None, config_path="../configs", config_name="embeddings")
 def main(cfg: DictConfig) -> None:
     settings = OmegaConf.to_container(cfg, resolve=True)
@@ -629,6 +687,12 @@ def main(cfg: DictConfig) -> None:
 
     num_workers = int(defaults.get("num_workers", 0))
     device = choose_device(defaults.get("device", "auto"))
+
+    if settings.get("text_only"):
+        for encoder_name in encoders:
+            generate_text_for_encoder(encoder_name, modalities, device, bool(settings.get("overwrite", False)),
+                                      settings)
+        return
 
     for encoder_name in encoders:
         generate_for_encoder(

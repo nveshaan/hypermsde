@@ -1,0 +1,8 @@
+# Cosine softmax against normal/abnormal prompt embeddings (data/<modality>/<encoder>_text.npz, made by
+# scripts/generate_embeddings.py text_only=true). Uses no support.
+name: cosine_text
+text: true
+fn:
+  _target_: baselines.detectors.cosine_text
+  _partial_: true
+  temperature: 0.01

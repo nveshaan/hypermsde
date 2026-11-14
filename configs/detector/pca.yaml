@@ -1,0 +1,6 @@
+# Reconstruction error from the principal subspace explaining `variance` (at most K - 1 components).
+name: pca
+fn:
+  _target_: baselines.detectors.pca
+  _partial_: true
+  variance: 0.9

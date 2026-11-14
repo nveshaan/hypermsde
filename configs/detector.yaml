@@ -1,0 +1,32 @@
+# Settings for scripts/run_detector.py: a standard detector (configs/detector/<name>.yaml) on the embeddings of
+# one encoder, with the same samples and support as scripts/run_msde.py.
+defaults:
+  - _self_
+  - detector: knn   # not a key of this file: `detector` is the config group, pick it with detector=lof
+  - override hydra/job_logging: disabled
+  - override hydra/hydra_logging: disabled
+
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: .
+    subdir: ""
+  output_subdir: null
+  job:
+    chdir: false
+
+data_root: ${oc.env:DELTA_DATA,data}
+modality: chest
+encoder: CLIP
+dataset: null   # null runs every dataset listed in configs/datasets/<modality>.yaml
+seed: 42
+cap: 10000
+# Few-shot: number of normal samples (label 0, drawn with support_seed) taken out of the data and used to fit the
+# detector. 0 = zero-shot: the detector is fit on the evaluated set itself (transductive).
+support: 0
+support_seed: ${seed}
+
+mlflow:
+  tracking_uri: sqlite:///experiments/mlflow.db
+  experiment_name: detector

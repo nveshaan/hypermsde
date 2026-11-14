@@ -1,0 +1,7 @@
+# Mean distance to the k nearest neighbours (k capped at the support size).
+name: knn
+fn:
+  _target_: baselines.detectors.knn
+  _partial_: true
+  k: 10
+  metric: cosine
