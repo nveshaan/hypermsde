@@ -1,0 +1,12 @@
+name: ANoCo
+_target_: baselines.anoco.ANoCo
+# Reimplemented from the paper (no released code). DINOv3 is gated on Hugging Face: request access, then
+# `hf auth login` or HF_TOKEN.
+backbone: facebook/dinov3-vitl16-pretrain-lvd1689m
+layer: 18          # output of the 18th transformer block
+image_size: 768
+lam: 1.0           # query stabilisation weight Lambda_q
+blur_kernel: 7
+blur_sigma: 0.8
+query_chunk: 256   # query patches processed at once (memory only)
+device: auto
