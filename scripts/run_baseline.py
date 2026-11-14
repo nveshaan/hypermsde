@@ -78,6 +78,8 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         return
 
     overrides = {"class_name": cfg.class_names[cfg.modality]} if "class_name" in cfg.baselines else {}
+    if "modality" in cfg.baselines:
+        overrides["modality"] = cfg.modality
     method = hydra.utils.instantiate(cfg.baselines, **overrides)
     few_shot = getattr(method, "requires_support", False)
     if few_shot != (support_index is not None):

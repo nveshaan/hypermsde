@@ -1,0 +1,15 @@
+name: UniVAD
+_target_: baselines.univad.UniVAD
+repo_url: https://github.com/FantasticGNU/UniVAD.git
+repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/UniVAD
+modality: chest   # set per run by scripts/run_baseline.py; picks the grounding prompt below
+device: auto
+image_size: 448
+seed: 0
+# GroundingDINO prompts and thresholds for the component masks, from the authors' configs/class_histogram:
+# chest = ChestXray.yaml, mri = BrainMRI.yaml, oct = OCT17.yaml. Fundus has no authors' config; it uses OCT17's.
+grounding:
+  chest: {box_threshold: 0.35, text_threshold: 0.35, text_prompt: "chest. Xray", background_prompt: ""}
+  mri: {box_threshold: 0.2, text_threshold: 0.2, text_prompt: "MRI", background_prompt: ""}
+  oct: {box_threshold: 0.35, text_threshold: 0.35, text_prompt: "Retina . object ", background_prompt: ""}
+  fundus: {box_threshold: 0.35, text_threshold: 0.35, text_prompt: "Retina . object ", background_prompt: ""}   # not the authors'
