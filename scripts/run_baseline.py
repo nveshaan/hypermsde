@@ -1,6 +1,7 @@
 """Run an inference-only anomaly detection baseline on the raw images of a dataset and log the results to MLflow.
 
 Example: python scripts/run_baseline.py baselines=adaclip modality=chest dataset=VinCXR
+Few-shot: python scripts/run_baseline.py baselines=anoco modality=chest support=4 support_seed=0
 """
 import argparse
 import sys
@@ -33,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from datasets.embeds import _balanced_cap_indices  # noqa: E402
 from datasets.raw import MODALITY_DATASETS, RawDataset  # noqa: E402
-from run_msde import dataset_names, detection_metrics  # noqa: E402
+from run_msde import dataset_names, detection_metrics, select_support  # noqa: E402
 
 
 def raw_dataset(cfg: DictConfig, name: str) -> RawDataset:
@@ -61,6 +62,15 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
     keep = (_balanced_cap_indices(all_labels, cfg.cap, cfg.seed)
             if cfg.cap is not None and len(all_labels) > cfg.cap else np.arange(len(all_labels)))
     labels = all_labels[keep]
+    support_index = None
+    if cfg.support > 0:
+        chosen, rest = select_support(labels, cfg.support, cfg.support_seed)
+        if chosen is None:
+            print(f"[skip] {name}: support={cfg.support} needs more normal samples (has {(labels == 0).sum()})")
+            return
+        # Normal samples drawn as support are removed from the evaluated samples, as in run_msde.py.
+        support_index = keep[chosen]
+        keep, labels = keep[rest], labels[rest]
     y = (labels != 0).astype(int)
     n, n_anomalies = len(y), int(y.sum())
     if n_anomalies == 0 or n_anomalies == n:
@@ -69,6 +79,12 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
 
     overrides = {"class_name": cfg.class_names[cfg.modality]} if "class_name" in cfg.baselines else {}
     method = hydra.utils.instantiate(cfg.baselines, **overrides)
+    few_shot = getattr(method, "requires_support", False)
+    if few_shot != (support_index is not None):
+        raise ValueError(f"{cfg.baselines.name} is a {'few' if few_shot else 'zero'}-shot baseline, "
+                         f"run it with {'support > 0' if few_shot else 'support=0'}")
+    if few_shot:
+        method.fit([Image.open(raw.paths[i]).convert("RGB") for i in support_index])
     score = np.empty(n, dtype=np.float64)
     for start in range(0, n, cfg.load_chunk):
         chunk = [raw.paths[i] for i in keep[start:start + cfg.load_chunk]]
@@ -83,12 +99,16 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         metrics.update(detection_metrics((labels[sub] == c).astype(int), score[sub], prefix=f"subtype_{c}/"))
 
     label = cfg.baselines.name + ("" if cfg.baselines.get("checkpoint") is None else f"-{cfg.baselines.checkpoint}")
+    if support_index is not None:
+        label += f"-K{cfg.support}-s{cfg.support_seed}"
     with mlflow.start_run(run_name=f"{cfg.modality}-{name}-{label}"):
         mlflow.log_params({
             "dataset": name,
             "modality": cfg.modality,
             "method": cfg.baselines.name,
             "seed": cfg.seed,
+            "support": cfg.support,
+            "support_seed": cfg.support_seed,
             "n_samples": n,
             "n_anomalies": n_anomalies,
             **{f"n_subtype_{c}": count for c, count in subtype_counts.items()},
@@ -98,10 +118,12 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         mlflow.log_metrics(metrics, step=0)
         mlflow.log_dict(OmegaConf.to_container(cfg, resolve=True), "configs/config.yaml")
         mlflow.log_dict(OmegaConf.to_container(cfg.baselines, resolve=True), "configs/baseline.yaml")
-        # Per-sample scores, with each sample's label and its index into the dataset's labels.npy.
+        # Per-sample scores, with each sample's label and its index into the dataset's labels.npy (and, with
+        # support, the support samples' indices).
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "scores.npz"
-            np.savez(path, score=score, label=labels, index=keep)
+            extra = {"support_index": support_index} if support_index is not None else {}
+            np.savez(path, score=score, label=labels, index=keep, **extra)
             mlflow.log_artifact(str(path), "scores")
     print(f"{cfg.modality}/{name}/{label}: " + " ".join(f"{k}={v:.4f}" for k, v in metrics.items() if "/" not in k))
     for c, count in subtype_counts.items():

@@ -31,6 +31,7 @@ dist: euclidean
 # Few-shot: number of normal samples (label 0, drawn with `seed`) taken out of the data and passed to MSDE as
 # support points, which pull every point through the bias function. 0 = zero-shot, no support.
 support: 0
+support_seed: ${seed}   # draws the support; vary it to resample the support with the evaluated set (cap) fixed
 
 # Extra MSDE runs. Round 0 runs without labels; every later round re-runs on the original embeddings with
 # pseudo labels from the previous round's score (top `anomaly_fraction` by score = 1, rest = 0), so points are

@@ -22,6 +22,10 @@ dataset: null   # null runs every dataset listed in configs/datasets/<modality>.
 seed: 42
 cap: 10000
 load_chunk: 256   # images held in memory at once
+# Few-shot baselines (requires_support): number of normal samples (label 0, drawn with support_seed) taken out of
+# the data and passed to the method's fit(). The same draw as scripts/run_msde.py. 0 = zero-shot.
+support: 0
+support_seed: ${seed}
 
 # Class name AdaCLIP prompts with, per modality.
 class_names:

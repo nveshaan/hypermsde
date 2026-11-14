@@ -62,6 +62,19 @@ def pseudo_labels(score: np.ndarray, anomaly_fraction: float) -> np.ndarray:
     return pseudo
 
 
+def select_support(labels: np.ndarray, k: int, seed: int) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """`k` normal samples (label 0) drawn with `seed` as support, and the remaining samples to evaluate.
+
+    Depends on the labels alone, so every encoder and method gets the same support for a given `k` and `seed`.
+    Returns (None, None) when there are not more than `k` normal samples.
+    """
+    normal = np.flatnonzero(labels == 0)
+    if k >= len(normal):
+        return None, None
+    chosen = np.sort(np.random.RandomState(seed).choice(normal, k, replace=False))
+    return chosen, np.setdiff1d(np.arange(len(labels)), chosen)
+
+
 def dataset_names(cfg: DictConfig) -> list[str]:
     if cfg.dataset is not None:
         return [cfg.dataset]
@@ -78,15 +91,12 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
     embeddings, labels, indices = data.embeddings, np.asarray(data.labels), data.indices
     support = None
     if cfg.support > 0:
-        normal = np.flatnonzero(labels == 0)
-        if cfg.support >= len(normal):
-            print(f"[skip] {name}: support={cfg.support} needs more normal samples (has {len(normal)})")
+        chosen, rest = select_support(labels, cfg.support, cfg.support_seed)
+        if chosen is None:
+            print(f"[skip] {name}: support={cfg.support} needs more normal samples (has {(labels == 0).sum()})")
             return
-        # Normal samples drawn as support are removed from the evaluated points.
-        chosen = np.sort(np.random.RandomState(cfg.seed).choice(normal, cfg.support, replace=False))
         support_index = indices[chosen]
         support = torch.from_numpy(np.asarray(embeddings[chosen], dtype=np.float32))
-        rest = np.setdiff1d(np.arange(len(labels)), chosen)
         embeddings, labels, indices = embeddings[rest], labels[rest], indices[rest]
     X = torch.from_numpy(np.asarray(embeddings, dtype=np.float32))
     y = (labels != 0).astype(int)
@@ -142,6 +152,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
             "seed": cfg.seed,
             "dist": cfg.dist,
             "support": cfg.support,
+            "support_seed": cfg.support_seed,
             "n_samples": n,
             "n_anomalies": n_anomalies,
             "pseudo_label_rounds": cfg.pseudo_labels.rounds,
