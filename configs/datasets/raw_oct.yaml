@@ -1,5 +1,5 @@
 _target_: datasets.raw.OCTRawDataset
-root: ${oc.env:DELTA_DATA,data}
+root: ${oc.env:HMSDE_DATA,data}
 modality_root: ${data.oct.root}/oct
 seed: 42
 sample_strategy: numpy_sorted

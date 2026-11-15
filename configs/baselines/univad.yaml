@@ -1,7 +1,7 @@
 name: UniVAD
 _target_: baselines.univad.UniVAD
 repo_url: https://github.com/FantasticGNU/UniVAD.git
-repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/UniVAD
+repo_dir: ${oc.env:HMSDE_THIRD_PARTY,.third_party}/UniVAD
 modality: chest   # set per run by scripts/run_baseline.py; picks the grounding prompt below
 device: auto
 image_size: 448

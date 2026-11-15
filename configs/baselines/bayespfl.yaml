@@ -1,7 +1,7 @@
 name: Bayes-PFL
 _target_: baselines.bayespfl.BayesPFL
 repo_url: https://github.com/xiaozhen228/Bayes-PFL.git
-repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/Bayes-PFL
+repo_dir: ${oc.env:HMSDE_THIRD_PARTY,.third_party}/Bayes-PFL
 checkpoint: visa   # key of `checkpoints` (Google Drive file ids): auxiliary training set; no medical-trained one is released
 checkpoints:
   visa: 1rNs_rdTmrg4JshmKHotq6AN1gqTpPjvm

@@ -1,7 +1,7 @@
 name: DPMM
 _target_: baselines.dpmm.DPMM
 repo_url: https://github.com/NicoSchulthess/anomalydino-dpmm.git
-repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/anomalydino-dpmm
+repo_dir: ${oc.env:HMSDE_THIRD_PARTY,.third_party}/anomalydino-dpmm
 device: auto
 # The authors' config/*_diag.yaml
 backbone: dinov2_vits14

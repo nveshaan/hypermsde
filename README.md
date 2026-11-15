@@ -1,26 +1,28 @@
-# DELTA
+# HyperMSDE: Hyperspherical Mean Shift Density Enhancement
+
+HyperMSDE is a training-free, unsupervised framework for zero-shot anomaly detection that exploits the hyperspherical geometry of pretrained image embeddings through mean-shift density enhancement.
 
 ## Setup
 
 ```bash
-git clone https://github.com/nveshaan/delta.git
-cd delta
+git clone https://github.com/nveshaan/hypermsde.git
+cd hypermsde
 uv sync
 ```
 
-## Environment variables
+#### Environment variables
 
 Paths in `configs/` are read from environment variables (`${oc.env:NAME,default}`), so each machine sets its own. All are optional.
 
 | Variable | Used for | Default |
 |---|---|---|
-| `DELTA_DATA` | Raw images and embeddings (`<DELTA_DATA>/<modality>/<dataset>/`). `generate_embeddings.py` reads the images and writes the embeddings and labels; `run_msde.py` and `run_baseline.py` read them | `data` (relative to the repo) |
-| `DELTA_THIRD_PARTY` | Where UniMed-CLIP and the baseline repos (AnomalyCLIP, FAPrompt, AdaCLIP) are cloned | `.third_party` (relative to the repo) |
+| `HMSDE_DATA` | Raw images and embeddings (`<HMSDE_DATA>/<modality>/<dataset>/`). `generate_embeddings.py` reads the images and writes the embeddings and labels; `run_msde.py` and `run_baseline.py` read them | `data` (relative to the repo) |
+| `HMSDE_THIRD_PARTY` | Where UniMed-CLIP and the baseline repos (AnomalyCLIP, FAPrompt, AdaCLIP) are cloned | `.third_party` (relative to the repo) |
 
 ```bash
 # e.g. in ~/.zshenv
-export DELTA_DATA="$HOME/Developer/delta/data"
-export DELTA_THIRD_PARTY="$HOME/Developer/delta/.third_party"
+export HMSDE_DATA="$HOME/Developer/delta/data"
+export HMSDE_THIRD_PARTY="$HOME/Developer/delta/.third_party"
 ```
 
 A variable can still be overridden for one run on the command line, e.g. `data_root=/path/to/data` for `run_baseline.py`.
@@ -110,7 +112,7 @@ Everything is logged with MLflow to `experiments/mlflow.db` (artifacts in `exper
 
 ## Run baselines
 
-`scripts/run_baseline.py` runs an inference-only (zero-shot) baseline on the **raw images** of a dataset, on the same samples as `run_msde.py` (same labels and cap). The method is a config in `configs/baselines/`: `anomalyclip`, `faprompt` or `adaclip`. Their official repos are cloned to `.third_party/` and the released checkpoints downloaded on first use. Raw images are read from `DELTA_DATA` (see Environment variables), so run it where they are.
+`scripts/run_baseline.py` runs an inference-only (zero-shot) baseline on the **raw images** of a dataset, on the same samples as `run_msde.py` (same labels and cap). The method is a config in `configs/baselines/`: `anomalyclip`, `faprompt` or `adaclip`. Their official repos are cloned to `.third_party/` and the released checkpoints downloaded on first use. Raw images are read from `HMSDE_DATA` (see Environment variables), so run it where they are.
 
 ```bash
 uv run python scripts/run_baseline.py baselines=adaclip modality=chest dataset=VinCXR

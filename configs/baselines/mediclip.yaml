@@ -1,7 +1,7 @@
 name: MediCLIP
 _target_: baselines.mediclip.MediCLIP
 repo_url: https://github.com/cnulab/MediCLIP.git
-repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/MediCLIP
+repo_dir: ${oc.env:HMSDE_THIRD_PARTY,.third_party}/MediCLIP
 # The authors' configs (brainmri, chexpert, busi) differ only in their dataset names; chexpert's is used for every
 # modality: 200 epochs, batch 8, ViT-L-14 at 224, layers 12/18/24, the four anomaly tasks, CoOp prompts.
 config: config/chexpert.yaml

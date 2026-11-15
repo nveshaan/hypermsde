@@ -16,7 +16,7 @@ hydra:
   job:
     chdir: false
 
-data_root: ${oc.env:DELTA_DATA,data}
+data_root: ${oc.env:HMSDE_DATA,data}
 modality: chest
 encoder: CLIP
 dataset: null   # null runs every dataset listed in configs/datasets/<modality>.yaml

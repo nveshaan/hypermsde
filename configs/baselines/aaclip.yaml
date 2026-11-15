@@ -1,7 +1,7 @@
 name: AA-CLIP
 _target_: baselines.aaclip.AACLIP
 repo_url: https://github.com/Mwxinnn/AA-CLIP.git
-repo_dir: ${oc.env:DELTA_THIRD_PARTY,.third_party}/AA-CLIP
+repo_dir: ${oc.env:HMSDE_THIRD_PARTY,.third_party}/AA-CLIP
 # No released weights: the folder (relative to the repo) that scripts/train_aaclip.py trains into, full shot on
 # VisA as in the authors' scripts.sh. The last image_adapter_<epoch>.pth is used.
 checkpoint: ckpt/visa_full

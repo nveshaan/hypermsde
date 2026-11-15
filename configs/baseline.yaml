@@ -15,7 +15,7 @@ hydra:
   job:
     chdir: false
 
-data_root: ${oc.env:DELTA_DATA,data}   # embeddings dir; only labels.npy is read, to select the same samples as run_msde.py
+data_root: ${oc.env:HMSDE_DATA,data}   # embeddings dir; only labels.npy is read, to select the same samples as run_msde.py
 modality: chest
 dataset: null   # null runs every dataset listed in configs/datasets/<modality>.yaml
 seed: 42
