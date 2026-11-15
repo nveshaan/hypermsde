@@ -40,7 +40,8 @@ from run_msde import dataset_names, detection_metrics, select_support  # noqa: E
 def raw_dataset(cfg: DictConfig, name: str) -> RawDataset:
     """The raw images of `name` in the order the embeddings were generated in (see generate_embeddings.py)."""
     raw_cfg = OmegaConf.load(PROJECT_ROOT / "configs" / "datasets" / f"raw_{cfg.modality}.yaml")
-    raw_cfg.root = cfg.raw_data_root
+    root = Path(cfg.data_root)
+    raw_cfg.root = str(root if root.is_absolute() else PROJECT_ROOT / root)
     resolved = OmegaConf.to_container(OmegaConf.create({"data": {cfg.modality: raw_cfg}}), resolve=True)
     config = resolved["data"][cfg.modality]
     kwargs = {"seed": int(config.get("seed", 42))}

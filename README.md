@@ -14,18 +14,16 @@ Paths in `configs/` are read from environment variables (`${oc.env:NAME,default}
 
 | Variable | Used for | Default |
 |---|---|---|
-| `DELTA_DATA` | Embeddings and labels (`<DELTA_DATA>/<modality>/<dataset>/`), written by `generate_embeddings.py`, read by `run_msde.py` and `run_baseline.py` | `data` (relative to the repo) |
-| `DELTA_RAW_DATA` | Raw images (`<DELTA_RAW_DATA>/<modality>/<dataset>/`), read by `generate_embeddings.py` and `run_baseline.py` | `/Volumes/Eshaan APFS/delta/dataset` |
+| `DELTA_DATA` | Raw images and embeddings (`<DELTA_DATA>/<modality>/<dataset>/`). `generate_embeddings.py` reads the images and writes the embeddings and labels; `run_msde.py` and `run_baseline.py` read them | `data` (relative to the repo) |
 | `DELTA_THIRD_PARTY` | Where UniMed-CLIP and the baseline repos (AnomalyCLIP, FAPrompt, AdaCLIP) are cloned | `.third_party` (relative to the repo) |
 
 ```bash
 # e.g. in ~/.zshenv
 export DELTA_DATA="$HOME/Developer/delta/data"
-export DELTA_RAW_DATA="/Volumes/Eshaan APFS/delta/dataset"
 export DELTA_THIRD_PARTY="$HOME/Developer/delta/.third_party"
 ```
 
-A variable can still be overridden for one run on the command line, e.g. `raw_data_root=/path/to/images` for `run_baseline.py`.
+A variable can still be overridden for one run on the command line, e.g. `data_root=/path/to/data` for `run_baseline.py`.
 
 ## Data
 
@@ -112,7 +110,7 @@ Everything is logged with MLflow to `experiments/mlflow.db` (artifacts in `exper
 
 ## Run baselines
 
-`scripts/run_baseline.py` runs an inference-only (zero-shot) baseline on the **raw images** of a dataset, on the same samples as `run_msde.py` (same labels and cap). The method is a config in `configs/baselines/`: `anomalyclip`, `faprompt` or `adaclip`. Their official repos are cloned to `.third_party/` and the released checkpoints downloaded on first use. Raw images are read from `DELTA_RAW_DATA` (see Environment variables), so run it where they are.
+`scripts/run_baseline.py` runs an inference-only (zero-shot) baseline on the **raw images** of a dataset, on the same samples as `run_msde.py` (same labels and cap). The method is a config in `configs/baselines/`: `anomalyclip`, `faprompt` or `adaclip`. Their official repos are cloned to `.third_party/` and the released checkpoints downloaded on first use. Raw images are read from `DELTA_DATA` (see Environment variables), so run it where they are.
 
 ```bash
 uv run python scripts/run_baseline.py baselines=adaclip modality=chest dataset=VinCXR

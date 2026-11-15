@@ -1,5 +1,5 @@
 _target_: datasets.raw.MRIRawDataset
-root: ${oc.env:DELTA_RAW_DATA,/Volumes/Eshaan APFS/delta/dataset}
+root: ${oc.env:DELTA_DATA,data}
 modality_root: ${data.mri.root}/mri
 seed: 42
 sample_strategy: numpy_sorted
