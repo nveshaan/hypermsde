@@ -1,5 +1,5 @@
 """Run a standard anomaly detector (cosine softmax with text, kNN, LOF, PCA) on the embeddings of a dataset and log
-the results to MLflow. Same samples, support and metrics as scripts/run_msde.py, for the encoder comparison.
+the results to MLflow. Same samples, support and metrics as scripts/run_hmsde.py, for the encoder comparison.
 
 Example: python scripts/run_detector.py detector=lof modality=chest encoder=BiomedCLIP dataset=VinCXR support=4
 """
@@ -31,7 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from datasets.embeds import SingleEmbedsDataset  # noqa: E402
-from run_msde import dataset_names, detection_metrics, select_support  # noqa: E402
+from run_hmsde import dataset_names, detection_metrics, select_support  # noqa: E402
 
 
 def run_dataset(cfg: DictConfig, name: str) -> None:
@@ -47,7 +47,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         if chosen is None:
             print(f"[skip] {name}: support={cfg.support} needs more normal samples (has {(labels == 0).sum()})")
             return
-        # Normal samples drawn as support are removed from the evaluated points, as in run_msde.py.
+        # Normal samples drawn as support are removed from the evaluated points, as in run_hmsde.py.
         support, support_index = X[chosen], indices[chosen]
         X, labels, indices = X[rest], labels[rest], indices[rest]
     y = (labels != 0).astype(int)

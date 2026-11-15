@@ -1,5 +1,5 @@
 # Settings for scripts/run_detector.py: a standard detector (configs/detector/<name>.yaml) on the embeddings of
-# one encoder, with the same samples and support as scripts/run_msde.py.
+# one encoder, with the same samples and support as scripts/run_hmsde.py.
 defaults:
   - _self_
   - detector: knn   # not a key of this file: `detector` is the config group, pick it with detector=lof

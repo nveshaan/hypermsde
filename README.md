@@ -10,13 +10,13 @@ cd hypermsde
 uv sync
 ```
 
-#### Environment variables
+### Environment variables
 
 Paths in `configs/` are read from environment variables (`${oc.env:NAME,default}`), so each machine sets its own. All are optional.
 
 | Variable | Used for | Default |
 |---|---|---|
-| `HMSDE_DATA` | Raw images and embeddings (`<HMSDE_DATA>/<modality>/<dataset>/`). `generate_embeddings.py` reads the images and writes the embeddings and labels; `run_msde.py` and `run_baseline.py` read them | `data` (relative to the repo) |
+| `HMSDE_DATA` | Raw images and embeddings (`<HMSDE_DATA>/<modality>/<dataset>/`). `generate_embeddings.py` reads the images and writes the embeddings and labels; `run_hmsde.py` and `run_baseline.py` read them | `data` (relative to the repo) |
 | `HMSDE_THIRD_PARTY` | Where UniMed-CLIP and the baseline repos (AnomalyCLIP, FAPrompt, AdaCLIP) are cloned | `.third_party` (relative to the repo) |
 
 ```bash
@@ -84,22 +84,22 @@ The generated files are written to
 > `hf auth login`
 > (or set the `HF_TOKEN` environment variable).
 
-## Run MSDE
+## Run HMSDE
 
-`scripts/run_msde.py` runs Mean Shift Density Enhancement on the embeddings of an encoder, using the settings in `configs/msde.yaml`. The movement of each point is its anomaly score (label 0 is normal, any other label is anomalous).
+`scripts/run_hmsde.py` runs Mean Shift Density Enhancement on the embeddings of an encoder, using the settings in `configs/hmsde.yaml`. The movement of each point is its anomaly score (label 0 is normal, any other label is anomalous).
 
 ```bash
 # One dataset.
-uv run python scripts/run_msde.py modality=chest encoder=CLIP dataset=VinCXR
+uv run python scripts/run_hmsde.py modality=chest encoder=CLIP dataset=VinCXR
 
 # Every dataset listed in configs/datasets/<modality>.yaml (one MLflow run each).
-uv run python scripts/run_msde.py modality=chest encoder=CLIP dataset=null
+uv run python scripts/run_hmsde.py modality=chest encoder=CLIP dataset=null
 
 # Three runs; runs after the first use pseudo labels from the previous one (neighbours must be presumed normal).
-uv run python scripts/run_msde.py pseudo_labels.rounds=3 pseudo_labels.anomaly_fraction=0.2
+uv run python scripts/run_hmsde.py pseudo_labels.rounds=3 pseudo_labels.anomaly_fraction=0.2
 
-# Override MSDE hyperparameters.
-uv run python scripts/run_msde.py model.k=20 model.learning_rate=0.1
+# Override HMSDE hyperparameters.
+uv run python scripts/run_hmsde.py model.k=20 model.learning_rate=0.1
 ```
 
 The density, score, weight and stability used are selected by the config groups in `configs/{density,score,weight,stability}/`.
@@ -112,7 +112,7 @@ Everything is logged with MLflow to `experiments/mlflow.db` (artifacts in `exper
 
 ## Run baselines
 
-`scripts/run_baseline.py` runs an inference-only (zero-shot) baseline on the **raw images** of a dataset, on the same samples as `run_msde.py` (same labels and cap). The method is a config in `configs/baselines/`: `anomalyclip`, `faprompt` or `adaclip`. Their official repos are cloned to `.third_party/` and the released checkpoints downloaded on first use. Raw images are read from `HMSDE_DATA` (see Environment variables), so run it where they are.
+`scripts/run_baseline.py` runs an inference-only (zero-shot) baseline on the **raw images** of a dataset, on the same samples as `run_hmsde.py` (same labels and cap). The method is a config in `configs/baselines/`: `anomalyclip`, `faprompt` or `adaclip`. Their official repos are cloned to `.third_party/` and the released checkpoints downloaded on first use. Raw images are read from `HMSDE_DATA` (see Environment variables), so run it where they are.
 
 ```bash
 uv run python scripts/run_baseline.py baselines=adaclip modality=chest dataset=VinCXR
@@ -123,7 +123,7 @@ uv run python scripts/run_baseline.py baselines=anomalyclip baselines.checkpoint
 
 Checkpoints are chosen with `baselines.checkpoint`; selecting one the authors did not release (e.g. `medical` for AnomalyCLIP and FAPrompt) fails with the list of available ones. AdaCLIP's released weights were all trained on industrial and medical data (`mvtec_colondb`, `visa_clinicdb`, `all`).
 
-Runs go to the `baseline` MLflow experiment with the same metrics as MSDE (including `*_flipped` and per-subtype). Params are only dataset, modality, method, seed and sample counts; the checkpoint is a tag, and the resolved configs are stored under `configs/` as artifacts.
+Runs go to the `baseline` MLflow experiment with the same metrics as HMSDE (including `*_flipped` and per-subtype). Params are only dataset, modality, method, seed and sample counts; the checkpoint is a tag, and the resolved configs are stored under `configs/` as artifacts.
 
 ## Acknowledgements
 

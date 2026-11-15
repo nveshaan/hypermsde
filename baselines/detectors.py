@@ -2,7 +2,7 @@
 
 Every detector is ``detector(X, support=None, **params) -> score`` with ``X`` the (n, d) evaluated embeddings and
 ``support`` the (K, d) normal support embeddings (few-shot) or None (zero-shot). Higher score = more anomalous.
-Zero-shot is transductive, like MSDE: the detector is fit on ``X`` itself, every point leaving itself out.
+Zero-shot is transductive, like HMSDE: the detector is fit on ``X`` itself, every point leaving itself out.
 Few-shot fits on the support only (inductive).
 """
 import numpy as np

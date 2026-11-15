@@ -1,4 +1,4 @@
-"""Mean-shift density enhancement (MSDE), on the unit sphere or in the raw feature space, in a single file.
+"""Mean-shift density enhancement (HMSDE), on the unit sphere or in the raw feature space, in a single file.
 
 Every point of an embedding set is repeatedly moved towards a weighted mean of its neighbours until the
 movement converges. The pipeline, in the order ``MeanShiftDensityEnhancement.forward`` runs it:
@@ -763,7 +763,7 @@ class MeanShiftDensityEnhancement(torch.nn.Module):
     @torch.no_grad()
     def forward(self, X, labels=None, support=None, dist="euclidean", density_fn=None, score_fn=None, weight_fn=None,
                 stability_fn=None, metric_fn=None, bias_fn=None, step_fn=None):
-        """Run MSDE and return ``(shifted, metric, trajectory)``.
+        """Run HMSDE and return ``(shifted, metric, trajectory)``.
 
         Parameters
         ----------

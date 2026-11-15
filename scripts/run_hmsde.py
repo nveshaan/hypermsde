@@ -1,6 +1,6 @@
-"""Run MSDE on the embeddings of a dataset and log the results to MLflow.
+"""Run HMSDE on the embeddings of a dataset and log the results to MLflow.
 
-Example: python scripts/run_msde.py modality=chest encoder=CLIP dataset=VinCXR
+Example: python scripts/run_hmsde.py modality=chest encoder=CLIP dataset=VinCXR
 """
 import argparse
 import sys
@@ -121,8 +121,8 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
     subtypes = [int(c) for c in np.unique(labels) if c != 0]
     subtype_counts = {c: int((labels == c).sum()) for c in subtypes} if len(subtypes) > 1 else {}
 
-    rounds = []  # metrics of every MSDE run
-    scores = []  # per-sample scores of every MSDE run
+    rounds = []  # metrics of every HMSDE run
+    scores = []  # per-sample scores of every HMSDE run
     run_labels = None
     for r in range(cfg.pseudo_labels.rounds):
         model = hydra.utils.instantiate(cfg.model, **overrides)
@@ -182,7 +182,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
                   f"auroc_flipped={metrics[f'subtype_{c}/auroc_flipped']:.4f}")
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="msde")
+@hydra.main(version_base=None, config_path="../configs", config_name="hmsde")
 def main(cfg: DictConfig) -> None:
     tracking_uri = cfg.mlflow.tracking_uri
     if tracking_uri.startswith("sqlite:///") and not Path(tracking_uri[10:]).is_absolute():
