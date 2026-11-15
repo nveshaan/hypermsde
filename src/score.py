@@ -1,13 +1,13 @@
-"""Neighbour selection scores for HMSDE (the ``score_fn`` of ``MeanShiftDensityEnhancement.forward``).
+"""Neighbour selection scores for HyperMSDE (the ``score_fn`` of ``HypersphericalMeanShiftDensityEnhancement.forward``).
 
-Every score has the signature of ``src.hmsde.NeighborScore``:
+Every score has the signature of ``src.hypermsde.NeighborScore``:
 ``score(dist, density, stability, h, iteration, n_iters, graph, memory) -> (score, memory)``.
 """
 import torch
 
 
 def original(dist, density, stability, h, iteration, n_iters, graph, memory):
-    """The selection of the HMSDE paper (arXiv:2602.03293): the ``k`` nearest neighbours, by distance alone.
+    """The selection of the HyperMSDE paper (arXiv:2602.03293): the ``k`` nearest neighbours, by distance alone.
 
     No candidate gets a positive score, so ``select_neighbors`` fills every slot with the nearest candidates.
     """

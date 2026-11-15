@@ -1,7 +1,7 @@
-"""Mean-shift density enhancement (HMSDE), on the unit sphere or in the raw feature space, in a single file.
+"""Mean-shift density enhancement (HyperMSDE), on the unit sphere or in the raw feature space, in a single file.
 
 Every point of an embedding set is repeatedly moved towards a weighted mean of its neighbours until the
-movement converges. The pipeline, in the order ``MeanShiftDensityEnhancement.forward`` runs it:
+movement converges. The pipeline, in the order ``HypersphericalMeanShiftDensityEnhancement.forward`` runs it:
 
 1. **Normalise** (``sphere``): 0 leaves the embeddings as they are and the loop runs in the raw space. 1 scales
    them to unit length and re-normalises them right after every shift, so every state the loop passes through
@@ -642,7 +642,7 @@ def support_vectors(fn, diff, density, stability, h, learning_rate, iteration, n
 # ---------------------------------------------------------------------------------------------------------
 # The model
 # ---------------------------------------------------------------------------------------------------------
-class MeanShiftDensityEnhancement(torch.nn.Module):
+class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
     """Mean-shift density enhancement of unit-normalised embeddings (see the module docstring).
 
     Parameters
@@ -763,7 +763,7 @@ class MeanShiftDensityEnhancement(torch.nn.Module):
     @torch.no_grad()
     def forward(self, X, labels=None, support=None, dist="euclidean", density_fn=None, score_fn=None, weight_fn=None,
                 stability_fn=None, metric_fn=None, bias_fn=None, step_fn=None):
-        """Run HMSDE and return ``(shifted, metric, trajectory)``.
+        """Run HyperMSDE and return ``(shifted, metric, trajectory)``.
 
         Parameters
         ----------
@@ -943,4 +943,4 @@ class MeanShiftDensityEnhancement(torch.nn.Module):
         return x, metric if metric_fn is not None else total_distance, trajectory
 
 
-mean_shift_density_enhancement = MeanShiftDensityEnhancement
+hypermsde = HypersphericalMeanShiftDensityEnhancement

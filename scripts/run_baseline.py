@@ -34,7 +34,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from datasets.embeds import _balanced_cap_indices  # noqa: E402
 from datasets.raw import MODALITY_DATASETS, RawDataset  # noqa: E402
-from run_hmsde import dataset_names, detection_metrics, select_support  # noqa: E402
+from run_hypermsde import dataset_names, detection_metrics, select_support  # noqa: E402
 
 
 def raw_dataset(cfg: DictConfig, name: str) -> RawDataset:
@@ -59,7 +59,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
     raw = raw_dataset(cfg, name)
     if not np.array_equal(np.asarray(raw.labels), all_labels):
         raise RuntimeError(f"{name}: raw images and labels.npy are out of sync ({len(raw)} vs {len(all_labels)})")
-    # Same samples as run_hmsde.py (SingleEmbedsDataset applies the cap exactly like this).
+    # Same samples as run_hypermsde.py (SingleEmbedsDataset applies the cap exactly like this).
     keep = (_balanced_cap_indices(all_labels, cfg.cap, cfg.seed)
             if cfg.cap is not None and len(all_labels) > cfg.cap else np.arange(len(all_labels)))
     labels = all_labels[keep]
@@ -69,7 +69,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         if chosen is None:
             print(f"[skip] {name}: support={cfg.support} needs more normal samples (has {(labels == 0).sum()})")
             return
-        # Normal samples drawn as support are removed from the evaluated samples, as in run_hmsde.py.
+        # Normal samples drawn as support are removed from the evaluated samples, as in run_hypermsde.py.
         support_index = keep[chosen]
         keep, labels = keep[rest], labels[rest]
     y = (labels != 0).astype(int)

@@ -1,4 +1,4 @@
-"""Support biases for HMSDE (the ``bias_fn`` of ``MeanShiftDensityEnhancement.forward``).
+"""Support biases for HyperMSDE (the ``bias_fn`` of ``HypersphericalMeanShiftDensityEnhancement.forward``).
 
 Every bias has the signature
 ``bias(dist, density, stability, h, learning_rate, iteration, n_iters, memory) -> (bias, memory)``, where ``dist``

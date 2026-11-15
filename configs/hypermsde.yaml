@@ -1,4 +1,4 @@
-# Settings for scripts/run_hmsde.py: HMSDE on the embeddings of one encoder.
+# Settings for scripts/run_hypermsde.py: HyperMSDE on the embeddings of one encoder.
 defaults:
   - _self_
   - density: default
@@ -28,25 +28,25 @@ dataset: null   # null runs every dataset listed in configs/datasets/<modality>.
 seed: 42
 cap: 10000
 dist: euclidean
-# Few-shot: number of normal samples (label 0, drawn with `seed`) taken out of the data and passed to HMSDE as
+# Few-shot: number of normal samples (label 0, drawn with `seed`) taken out of the data and passed to HyperMSDE as
 # support points, which pull every point through the bias function. 0 = zero-shot, no support.
 support: 0
 support_seed: ${seed}   # draws the support; vary it to resample the support with the evaluated set (cap) fixed
 
-# Extra HMSDE runs. Round 0 runs without labels; every later round re-runs on the original embeddings with
+# Extra HyperMSDE runs. Round 0 runs without labels; every later round re-runs on the original embeddings with
 # pseudo labels from the previous round's score (top `anomaly_fraction` by score = 1, rest = 0), so points are
 # only pulled towards presumed-normal neighbours (label 0).
 pseudo_labels:
-  rounds: 1   # total number of HMSDE runs; 1 = a single run, no pseudo labels
+  rounds: 1   # total number of HyperMSDE runs; 1 = a single run, no pseudo labels
   anomaly_fraction: 0.2
 
-# "original: X" marks the value of the HMSDE paper (arXiv:2602.03293, Table 3). The paper's HMSDE also needs
+# "original: X" marks the value of the HyperMSDE paper (arXiv:2602.03293, Table 3). The paper's HyperMSDE also needs
 # score=original (plain k nearest neighbours), dist=euclidean, and the default density, weight and stability.
 # Unmarked values are not in the paper (its density weights equal the defaults here). The overrides that run it
 # are at the end of this file. Differences that remain: exact neighbours instead of NN-Descent, the whole set at once instead of mini-batches,
 # and the raw summed movement as the score instead of its sigmoid(z-score) (same ranking, same AUROC/AUPRC).
 model:
-  _target_: src.hmsde.MeanShiftDensityEnhancement
+  _target_: src.hypermsde.hypermsde
   k: 100                              # original: 100
   nbd_sample_count_threshold: 70      # original: 70
   n_neighbors: 15
@@ -66,8 +66,8 @@ model:
 
 mlflow:
   tracking_uri: sqlite:///experiments/mlflow.db
-  experiment_name: hmsde
+  experiment_name: hypermsde
 
-# The original HMSDE of the paper (arXiv:2602.03293), with Hydra overrides of the settings above:
-#   python scripts/run_hmsde.py score=original dist=euclidean model.sphere=0 model.recompute_neighbors=1
+# The original HyperMSDE of the paper (arXiv:2602.03293), with Hydra overrides of the settings above:
+#   python scripts/run_hypermsde.py score=original dist=euclidean model.sphere=0 model.recompute_neighbors=1
 # density, weight and stability stay at their defaults. Add modality=<name> encoder=<name> dataset=<name> as usual.

@@ -1,5 +1,5 @@
 name: NeighborWeight
 fn:
-  _target_: src.hmsde.NeighborWeight
+  _target_: src.hypermsde.NeighborWeight
   density_strength: ${model.density_strength}
   stability_strength: ${model.stability_strength}

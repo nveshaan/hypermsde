@@ -162,7 +162,7 @@ def _point_metrics(X: np.ndarray, labels: np.ndarray, seed: int, device: str) ->
     from scipy.sparse.csgraph import connected_components
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_samples
-    from methods.hmsde import DEFAULT_DEVICE, MeanShiftDensityEnhancement
+    from src.hypermsde import DEFAULT_DEVICE, hypermsde
 
     Xt = torch.from_numpy(X).float()
     n = len(Xt)
@@ -200,23 +200,23 @@ def _point_metrics(X: np.ndarray, labels: np.ndarray, seed: int, device: str) ->
     scores["intra_frac"] = np.mean(neighbor_labels == labels[:, None], axis=1).astype(np.float32)
     neighbors = nearest.indices[:, :k]
     scores["move"] = np.zeros(n, dtype=np.float32)
-    hmsde_device = DEFAULT_DEVICE if device == "auto" else device
+    hypermsde_device = DEFAULT_DEVICE if device == "auto" else device
     if n > 15:
-        hmsde = MeanShiftDensityEnhancement(
+        hypermsde_model = hypermsde(
             k=min(50, n - 1),
             nbd_sample_count_threshold=70,
             learning_rate=0.33,
             max_iters_shift=3,
             shift_threshold=0.01,
-            device=hmsde_device,
+            device=hypermsde_device,
             use_chunking=True,
             weight_chunk_size=2048,
             enable_gradients=False,
         )
         with torch.no_grad():
-            scores["move"] = hmsde(Xt.to(hmsde_device))[1].cpu().numpy()
+            scores["move"] = hypermsde_model(Xt.to(hypermsde_device))[1].cpu().numpy()
     else:
-        LOGGER.warning("Skipping HMSDE movement for a dataset with only %d sampled points", n)
+        LOGGER.warning("Skipping HyperMSDE movement for a dataset with only %d sampled points", n)
 
     # Group statistics from the original space are broadcast to their subtype.
     for name in ("pr_dim", "pca95_dim", "n_modes", "silhouette", "weight_entropy", "weight_cv",

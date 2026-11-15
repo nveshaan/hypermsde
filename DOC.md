@@ -1,14 +1,14 @@
-# HMSDE
+# HyperMSDE
 
-Mean-shift density enhancement (HMSDE) of embeddings, in one file: [`src/hmsde.py`](src/hmsde.py). Every point is repeatedly moved towards a weighted mean of its neighbours until the movement converges, and the embeddings stay on the unit sphere throughout. Only `torch` is required.
+Mean-shift density enhancement (HyperMSDE) of embeddings, in one file: [`src/hypermsde.py`](src/hypermsde.py). Every point is repeatedly moved towards a weighted mean of its neighbours until the movement converges, and the embeddings stay on the unit sphere throughout. Only `torch` is required.
 
 ```python
 import torch
-from hmsde import MeanShiftDensityEnhancement
+from hypermsde import hypermsde
 
 X = torch.randn(3000, 512)                      # any (n, d) float embeddings; they are normalised internally
 
-model = MeanShiftDensityEnhancement(k=100, learning_rate=0.1, device="mps")   # "cpu" / "cuda" / "mps"
+model = hypermsde(k=100, learning_rate=0.1, device="mps")   # "cpu" / "cuda" / "mps"
 shifted, movement, trajectory = model(X)
 ```
 
@@ -31,7 +31,7 @@ shifted, movement, trajectory = model(X)
 
 ## Constructor
 
-The arguments up to `device` are those of the original HMSDE (arXiv:2602.03293); the ones from `recompute_neighbors` on were added in this repo.
+The arguments up to `device` are those of the original HyperMSDE (arXiv:2602.03293); the ones from `recompute_neighbors` on were added in this repo.
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -136,10 +136,10 @@ step_fn(dist, density, stability, h, learning_rate, iteration, n_iters, memory)
 Within an iteration the order is: density update → select neighbours (if due) → weights → support bias and step → step → stability update → metric update. A function with an older signature (without `iteration`, `n_iters`, `graph` or the memory) raises a `TypeError`. `dist` is the distance chosen by the `dist` argument of `forward`; for `weight_fn` it is recomputed from the current positions every iteration. Shape or value violations raise `ValueError`. Examples:
 
 ```python
-from hmsde import MeanShiftDensityEnhancement, NeighborScore, NeighborWeight
+from hypermsde import hypermsde, NeighborScore, NeighborWeight
 import torch
 
-model = MeanShiftDensityEnhancement(k=30, recompute_neighbors=1)
+model = hypermsde(k=30, recompute_neighbors=1)
 
 # weaker emphasis on distance, stronger on stability, chosen per call
 shifted, _, _ = model(X, score_fn=NeighborScore(distance_strength=0.5, density_strength=1, stability_strength=2))
@@ -211,7 +211,7 @@ class RunningStability:
         memory["median_step"] = memory.get("median_step", []) + [float(size.median())]   # the memory keeps a history
         return (1 - self.momentum) * stability + self.momentum * target, memory
 
-model = MeanShiftDensityEnhancement(k=30, recompute_neighbors=1)
+model = hypermsde(k=30, recompute_neighbors=1)
 shifted, movement, _ = model(X, stability_fn=RunningStability(momentum=0.3))
 scores = model.stability_            # (n,) in [0, 1]
 history = model.memory_["median_step"]   # one entry per iteration
@@ -231,7 +231,7 @@ history = model.memory_["median_step"]   # one entry per iteration
 def pull(dist, density, stability, h, learning_rate, iteration, n_iters, memory):
     return learning_rate * dist.mean(dim=0), memory      # towards the support's centroid
 
-model = MeanShiftDensityEnhancement()
+model = hypermsde()
 shifted, movement, _ = model(X, support=[X[i] for i in normal_idx], bias_fn=pull)
 ```
 

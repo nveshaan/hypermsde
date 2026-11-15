@@ -1,4 +1,4 @@
-# HMSDE Zero-Shot and Few-Shot Anomaly Detection Benchmark Plan
+# HyperMSDE Zero-Shot and Few-Shot Anomaly Detection Benchmark Plan
 
 # 1. Central Research Question
 
@@ -8,13 +8,13 @@ The paper investigates whether pretrained medical-image representations contain 
 
 The core hypothesis is:
 
-> **Pretrained medical-image embeddings contain useful geometric structure, and HMSDE can exploit this structure directly to perform zero-shot anomaly detection.**
+> **Pretrained medical-image embeddings contain useful geometric structure, and HyperMSDE can exploit this structure directly to perform zero-shot anomaly detection.**
 
 The experimental story therefore separates three factors:
 
 1. **Representation:** Does the pretrained embedding space contain useful anomaly information?
-2. **Detector:** Does HMSDE extract more of that information than standard geometric/text-guided detectors?
-3. **Interaction:** Does HMSDE consistently benefit from different pretrained medical representations?
+2. **Detector:** Does HyperMSDE extract more of that information than standard geometric/text-guided detectors?
+3. **Interaction:** Does HyperMSDE consistently benefit from different pretrained medical representations?
 
 Few-shot experiments then ask how the same approach behaves when a small amount of normal target information is added.
 
@@ -22,7 +22,7 @@ Few-shot experiments then ask how the same approach behaves when a small amount 
 
 # 2. Core Methodological Positioning
 
-HMSDE is evaluated as:
+HyperMSDE is evaluated as:
 
 - **Training-free:** no target-task model parameters are optimized.
 - **Unsupervised:** no target anomaly labels are used.
@@ -30,12 +30,12 @@ HMSDE is evaluated as:
 - **Transductive:** the target/query set can be used collectively.
 - **Few-shot:** optionally extended using a small normal-only support set.
 
-HMSDE is evaluated in two feature settings:
+HyperMSDE is evaluated in two feature settings:
 
-- **HMSDE (CLIP):** OpenAI CLIP.
-- **HMSDE (Best4):** the best-performing encoder among MedImageInsight, UniMed-CLIP, BiomedCLIP, and MedSigLIP.
+- **HyperMSDE (CLIP):** OpenAI CLIP.
+- **HyperMSDE (Best4):** the best-performing encoder among MedImageInsight, UniMed-CLIP, BiomedCLIP, and MedSigLIP.
 
-The key distinction is that **density itself is not the anomaly score**. HMSDE uses the geometry/dynamics of density enhancement, with anomaly scores based on the resulting movement/displacement of samples.
+The key distinction is that **density itself is not the anomaly score**. HyperMSDE uses the geometry/dynamics of density enhancement, with anomaly scores based on the resulting movement/displacement of samples.
 
 ---
 
@@ -59,13 +59,13 @@ The key distinction is that **density itself is not the anomaly score**. HMSDE u
 | **FAPrompt** | Auxiliary training | Auxiliary training data | Zero-shot | Inductive |
 | **AA-CLIP** | Auxiliary training | Auxiliary training data | Zero-shot | Inductive |
 | **Bayes-PFL** | Auxiliary training | Auxiliary training data | Zero-shot | Inductive |
-| **HMSDE** | **None** | **None** | **Zero-shot** | **Transductive** |
+| **HyperMSDE** | **None** | **None** | **Zero-shot** | **Transductive** |
 | **ANoCo** | None | None | Few-shot — normal support | Inductive |
 | **DPMM** | Support-set fitting | None | Few-shot — normal support | Inductive |
 | **MediCLIP** | Few-shot adaptation | Synthetic anomalies used for adaptation | Few-shot — normal support | Inductive |
 | **UniVAD** | None | None | Few-shot — normal support | Inductive |
 | **AnomaMed** | Few-shot adaptation | Synthetic anomalies used for adaptation | Few-shot — normal support | Inductive |
-| **HMSDE** | **None** | **Normal support only** | **Few-shot — normal support** | **Transductive/Inductive** |
+| **HyperMSDE** | **None** | **Normal support only** | **Few-shot — normal support** | **Transductive/Inductive** |
 
 ---
 
@@ -77,21 +77,21 @@ The main paper should answer the following questions in sequence:
 
 → **Table 1: Zero-Shot Benchmark**
 
-### Question 2 — Is the gain actually coming from HMSDE rather than simply from the pretrained encoder?
+### Question 2 — Is the gain actually coming from HyperMSDE rather than simply from the pretrained encoder?
 
 → **Table 2: Encoder × Detector**
 
-### Question 3 — Does HMSDE exploit useful structure across different pretrained representations?
+### Question 3 — Does HyperMSDE exploit useful structure across different pretrained representations?
 
-→ **Table 3: HMSDE × Encoder**
+→ **Table 3: HyperMSDE × Encoder**
 
 ### Question 4 — What happens when a small amount of normal target information is added?
 
 → **Figure 1: Data Efficiency Curve**
 
-### Question 5 — Which components of the proposed HMSDE formulation are responsible for its improvement?
+### Question 5 — Which components of the proposed HyperMSDE formulation are responsible for its improvement?
 
-→ **Table 4: Modifications over Original HMSDE**
+→ **Table 4: Modifications over Original HyperMSDE**
 
 ### Question 6 — How much of the performance comes from exploiting the unlabeled target distribution?
 
@@ -99,7 +99,7 @@ The main paper should answer the following questions in sequence:
 
 This ordering is intended to make the paper read as:
 
-> **Embedding geometry exists → HMSDE can exploit it → the gain is not merely the encoder → the effect generalizes across encoders → HMSDE is data-efficient → the geometric modifications explain the gain → transductive access to the target distribution provides additional information.**
+> **Embedding geometry exists → HyperMSDE can exploit it → the gain is not merely the encoder → the effect generalizes across encoders → HyperMSDE is data-efficient → the geometric modifications explain the gain → transductive access to the target distribution provides additional information.**
 
 ---
 
@@ -113,8 +113,8 @@ This ordering is intended to make the paper read as:
 
 - No target support images are supplied.
 - No target anomaly labels are supplied.
-- HMSDE (CLIP) uses OpenAI CLIP ViT-L/14@336 image embeddings, the same CLIP weights as the published baselines (which use its patch tokens).
-- HMSDE (Best4) uses the best of the four medical encoders.
+- HyperMSDE (CLIP) uses OpenAI CLIP ViT-L/14@336 image embeddings, the same CLIP weights as the published baselines (which use its patch tokens).
+- HyperMSDE (Best4) uses the best of the four medical encoders.
 - Classical training-free operations may exploit the unlabeled target set collectively.
 - The Best4 encoder must be selected without using final test-set anomaly labels.
 
@@ -127,8 +127,8 @@ This ordering is intended to make the paper read as:
 | FAPrompt | OpenAI CLIP ViT-L/14@336 patch tokens | None | None | None | Published ZSAD |
 | AA-CLIP | OpenAI CLIP ViT-L/14@336 patch tokens (to verify) | None | None | None | Published ZSAD |
 | Bayes-PFL | OpenAI CLIP ViT-L/14@336 patch tokens (to verify) | None | None | None | Published ZSAD |
-| **HMSDE (CLIP)** | **OpenAI CLIP ViT-L/14@336 image embedding** | **None** | **None** | **None** | **Proposed** |
-| **HMSDE (Best4)** | **Best of MedImageInsight / UniMed-CLIP / BiomedCLIP / MedSigLIP** | **None** | **None** | **None** | **Proposed** |
+| **HyperMSDE (CLIP)** | **OpenAI CLIP ViT-L/14@336 image embedding** | **None** | **None** | **None** | **Proposed** |
+| **HyperMSDE (Best4)** | **Best of MedImageInsight / UniMed-CLIP / BiomedCLIP / MedSigLIP** | **None** | **None** | **None** | **Proposed** |
 
 ## 5.4 Zero-shot does not imply unsupervised
 
@@ -141,7 +141,7 @@ A method can be zero-shot but use supervised or auxiliary training performed bef
 - **FAPrompt:** zero-shot, but trained using auxiliary data.
 - **AA-CLIP:** zero-shot, but trained using auxiliary data.
 - **Bayes-PFL:** zero-shot, but trained using auxiliary data.
-- **HMSDE:** zero-shot, unsupervised, training-free.
+- **HyperMSDE:** zero-shot, unsupervised, training-free.
 
 ---
 
@@ -149,7 +149,7 @@ A method can be zero-shot but use supervised or auxiliary training performed bef
 
 ## 6.1 Research question
 
-> **Is HMSDE actually extracting useful information from the embedding geometry, or is its performance primarily due to the quality of the pretrained encoder?**
+> **Is HyperMSDE actually extracting useful information from the embedding geometry, or is its performance primarily due to the quality of the pretrained encoder?**
 
 This is the key controlled experiment.
 
@@ -169,11 +169,11 @@ The representation is held fixed while the detector changes.
 - kNN
 - LOF
 - PCA reconstruction
-- HMSDE
+- HyperMSDE
 
 ## 6.4 Encoder × Detector Matrix
 
-| Encoder | Cosine softmax + text embedding | kNN | LOF | PCA | **HMSDE** |
+| Encoder | Cosine softmax + text embedding | kNN | LOF | PCA | **HyperMSDE** |
 |---|---:|---:|---:|---:|---:|
 | **OpenAI CLIP** | | | | | |
 | **MedImageInsight** | | | | | |
@@ -183,36 +183,36 @@ The representation is held fixed while the detector changes.
 
 ### Interpretation
 
-This table should establish whether HMSDE provides an advantage **within the same representation**.
+This table should establish whether HyperMSDE provides an advantage **within the same representation**.
 
 For example, if:
 
-> HMSDE > kNN, LOF, PCA, and text-guided scoring
+> HyperMSDE > kNN, LOF, PCA, and text-guided scoring
 
 across multiple encoders, the improvement cannot simply be attributed to using a better pretrained representation.
 
 This directly addresses:
 
-> **Does HMSDE contribute beyond the learned encoder?**
+> **Does HyperMSDE contribute beyond the learned encoder?**
 
 ---
 
-# 7. HMSDE × Encoder Comparison
+# 7. HyperMSDE × Encoder Comparison
 
 ## 7.1 Research question
 
-> **Does HMSDE exploit useful geometric structure across different pretrained medical representations?**
+> **Does HyperMSDE exploit useful geometric structure across different pretrained medical representations?**
 
 ## 7.2 Protocol
 
 - Same dataset split for every encoder.
-- Same HMSDE configuration.
+- Same HyperMSDE configuration.
 - Same evaluation protocol.
 - No test labels used to select the encoder.
-- Report HMSDE separately with each encoder.
+- Report HyperMSDE separately with each encoder.
 - Best4 is reported as a practical upper-end operating point, but does not replace the per-encoder results.
 
-## 7.3 Main HMSDE × Encoder Table
+## 7.3 Main HyperMSDE × Encoder Table
 
 | Encoder | AUROC | AUPRO |
 |---|---:|---:|
@@ -225,7 +225,7 @@ This directly addresses:
 
 The purpose is not simply to find the "best encoder."
 
-The important question is whether **HMSDE remains effective across substantially different pretrained embedding spaces**.
+The important question is whether **HyperMSDE remains effective across substantially different pretrained embedding spaces**.
 
 ---
 
@@ -233,7 +233,7 @@ The important question is whether **HMSDE remains effective across substantially
 
 ## 8.1 Research question
 
-> **If HMSDE can detect anomalies without target examples, how does its performance change when a small number of normal target examples are provided?**
+> **If HyperMSDE can detect anomalies without target examples, how does its performance change when a small number of normal target examples are provided?**
 
 Few-shot is therefore presented as an **extension of the zero-shot result**, rather than as a separate primary motivation.
 
@@ -271,8 +271,8 @@ Zero-shot can be viewed conceptually as **K = 0**, although its protocol differs
 | MediCLIP | CLIP patch features (variant to verify) | K normal images | Published adaptation | No | Published medical FSAD |
 | UniVAD | CLIP and DINOv2 patch features with segmentation masks (to verify) | K normal images | None | No | Published training-free FSAD |
 | AnomaMed | Multi-layer CLIP patch features (variant to verify) | K normal images | Synthetic anomaly generation + adaptation | No | Published medical FSAD |
-| **HMSDE (CLIP)** | **OpenAI CLIP ViT-L/14@336 image embedding** | **K normal images** | **None** | **No** | **Training-free FSAD** |
-| **HMSDE (Best4)** | **Best of MedImageInsight / UniMed-CLIP / BiomedCLIP / MedSigLIP** | **K normal images** | **None** | **No** | **Training-free FSAD** |
+| **HyperMSDE (CLIP)** | **OpenAI CLIP ViT-L/14@336 image embedding** | **K normal images** | **None** | **No** | **Training-free FSAD** |
+| **HyperMSDE (Best4)** | **Best of MedImageInsight / UniMed-CLIP / BiomedCLIP / MedSigLIP** | **K normal images** | **None** | **No** | **Training-free FSAD** |
 
 ---
 
@@ -280,7 +280,7 @@ Zero-shot can be viewed conceptually as **K = 0**, although its protocol differs
 
 ## 9.1 Research question
 
-> **How much target-domain information does HMSDE actually need?**
+> **How much target-domain information does HyperMSDE actually need?**
 
 Evaluate:
 
@@ -296,24 +296,24 @@ where:
 - **x-axis:** K ∈ {0, 1, 2, 4, 8, 16}
 - **y-axis:** AUROC and AUPRO where applicable
 - **Panels:** Chest, Fundus, MRI, OCT, plus optional mean panel
-- **Lines:** HMSDE (CLIP), HMSDE (Best4), few-shot baselines at K ≥ 1
+- **Lines:** HyperMSDE (CLIP), HyperMSDE (Best4), few-shot baselines at K ≥ 1
 - **Reference:** best zero-shot baseline
 - **Uncertainty:** mean ± standard deviation over support-sampling seeds
 - Same held-out test set for every K
 
 The desired story is:
 
-> **Strong performance at K = 0 demonstrates zero-shot capability; improvement with increasing K demonstrates that HMSDE can additionally exploit small amounts of normal target information.**
+> **Strong performance at K = 0 demonstrates zero-shot capability; improvement with increasing K demonstrates that HyperMSDE can additionally exploit small amounts of normal target information.**
 
 ---
 
-# 10. Modifications over Original HMSDE
+# 10. Modifications over Original HyperMSDE
 
 ## 10.1 Research question
 
-> **Why does the proposed HMSDE formulation work better than the original HMSDE?**
+> **Why does the proposed HyperMSDE formulation work better than the original HyperMSDE?**
 
-Start from the original HMSDE of Kar et al. (arXiv:2602.03293) and add the repo's modifications one at a time.
+Start from the original HyperMSDE of Kar et al. (arXiv:2602.03293) and add the repo's modifications one at a time.
 
 Each row keeps every modification above it.
 
@@ -321,14 +321,14 @@ Each row keeps every modification above it.
 
 | Step | Modification | Overrides relative to row above |
 |---|---|---|
-| 0 | **Original HMSDE**: raw features, plain kNN reselected every iteration, paper density, weights and score, paper hyperparameters | `density=original score=original weight=original metric=original model.sphere=0 model.recompute_neighbors=1` |
+| 0 | **Original HyperMSDE**: raw features, plain kNN reselected every iteration, paper density, weights and score, paper hyperparameters | `density=original score=original weight=original metric=original model.sphere=0 model.recompute_neighbors=1` |
 | 1 | + Fixed neighbours | `model.recompute_neighbors=0` |
 | 2 | + Unit-sphere normalization | `model.sphere=1` |
 | 3 | + Fréchet-mean centring | `model.sphere=2` |
 | 4 | + Proposed density | `density=default` |
 | 5 | + Proposed neighbour score | `score=default` |
 | 6 | + Proposed neighbour weights | `weight=default` |
-| 7 | + Proposed anomaly metric (= default HMSDE) | `metric=default` |
+| 7 | + Proposed anomaly metric (= default HyperMSDE) | `metric=default` |
 
 ## 10.3 Main ablation table
 
@@ -336,20 +336,20 @@ Each row keeps every modification above it.
 
 | Step | Configuration | Chest | Fundus | MRI | OCT | Mean | Δ prev | Δ orig |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 0 | Original HMSDE | | | | | | — | — |
+| 0 | Original HyperMSDE | | | | | | — | — |
 | 1 | + Fixed neighbours | | | | | | | |
 | 2 | + Unit sphere | | | | | | | |
 | 3 | + Fréchet-mean centring | | | | | | | |
 | 4 | + Proposed density | | | | | | | |
 | 5 | + Proposed neighbour score | | | | | | | |
 | 6 | + Proposed neighbour weights | | | | | | | |
-| 7 | + Proposed anomaly metric (**default HMSDE**) | | | | | | | |
+| 7 | + Proposed anomaly metric (**default HyperMSDE**) | | | | | | | |
 
 Complement the cumulative ablation with a **leave-one-out ablation** from the final configuration.
 
 ---
 
-# 11. Transductive vs Inductive HMSDE
+# 11. Transductive vs Inductive HyperMSDE
 
 ## 11.1 Research question
 
@@ -357,15 +357,15 @@ Complement the cumulative ablation with a **leave-one-out ablation** from the fi
 
 Compare:
 
-- **Transductive HMSDE:** uses the target/query set collectively.
-- **Inductive HMSDE:** uses only a fixed normal support/reference set when constructing the anomaly score.
+- **Transductive HyperMSDE:** uses the target/query set collectively.
+- **Inductive HyperMSDE:** uses only a fixed normal support/reference set when constructing the anomaly score.
 
 ## 11.2 Table
 
 | Variant | Uses target/query set collectively? | Mean AUROC | Mean AUPRO |
 |---|---:|---:|---:|
-| HMSDE — inductive | No | | |
-| **HMSDE — transductive** | **Yes** | | |
+| HyperMSDE — inductive | No | | |
+| **HyperMSDE — transductive** | **Yes** | | |
 | **Δ** | | | |
 
 This isolates the information obtained from the **unlabeled target distribution itself**.
@@ -387,8 +387,8 @@ The main paper should use the following order.
 | FAPrompt | CLIP | None | No | No | No | |
 | AA-CLIP | CLIP | None | No | No | No | |
 | Bayes-PFL | CLIP | None | No | No | No | |
-| **HMSDE (CLIP)** | **CLIP** | **None** | **Yes** | **Yes** | **Yes** | |
-| **HMSDE (Best4)** | **Best4 medical encoder** | **None** | **Yes** | **Yes** | **Yes** | |
+| **HyperMSDE (CLIP)** | **CLIP** | **None** | **Yes** | **Yes** | **Yes** | |
+| **HyperMSDE (Best4)** | **Best4 medical encoder** | **None** | **Yes** | **Yes** | **Yes** | |
 
 Per-modality AUROC/AUPRO should be included in the full table if space permits.
 
@@ -396,9 +396,9 @@ Per-modality AUROC/AUPRO should be included in the full table if space permits.
 
 # Table 2 — Encoder × Detector
 
-**Question: Does HMSDE provide an advantage when the pretrained representation is held fixed?**
+**Question: Does HyperMSDE provide an advantage when the pretrained representation is held fixed?**
 
-| Encoder | Cosine softmax + text embedding | kNN | LOF | PCA | **HMSDE** |
+| Encoder | Cosine softmax + text embedding | kNN | LOF | PCA | **HyperMSDE** |
 |---|---:|---:|---:|---:|---:|
 | OpenAI CLIP | | | | | |
 | MedImageInsight | | | | | |
@@ -410,9 +410,9 @@ This is the principal **representation-vs-detector disentanglement experiment**.
 
 ---
 
-# Table 3 — HMSDE × Encoder
+# Table 3 — HyperMSDE × Encoder
 
-**Question: Does HMSDE exploit useful structure across different pretrained representations?**
+**Question: Does HyperMSDE exploit useful structure across different pretrained representations?**
 
 | Encoder | AUROC | AUPRO |
 |---|---:|---:|
@@ -427,7 +427,7 @@ This is the principal **representation-vs-detector disentanglement experiment**.
 
 # Figure 1 — Data Efficiency
 
-**Question: How does HMSDE behave as target-domain information increases?**
+**Question: How does HyperMSDE behave as target-domain information increases?**
 
 Plot performance against:
 
@@ -435,30 +435,30 @@ Plot performance against:
 
 The figure should show:
 
-- HMSDE (CLIP)
-- HMSDE (Best4)
+- HyperMSDE (CLIP)
+- HyperMSDE (Best4)
 - Few-shot baselines for K ≥ 1
 - Best zero-shot baseline as a horizontal reference
 - Mean ± standard deviation for K > 0
 
 ---
 
-# Table 4 — Modifications over Original HMSDE
+# Table 4 — Modifications over Original HyperMSDE
 
-**Question: Which changes to HMSDE produce the improvement?**
+**Question: Which changes to HyperMSDE produce the improvement?**
 
 Use the cumulative ablation from Section 10.
 
 | Step | Configuration | Chest | Fundus | MRI | OCT | Mean | Δ prev | Δ orig |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| 0 | Original HMSDE | | | | | | — | — |
+| 0 | Original HyperMSDE | | | | | | — | — |
 | 1 | + Fixed neighbours | | | | | | | |
 | 2 | + Unit sphere | | | | | | | |
 | 3 | + Fréchet-mean centring | | | | | | | |
 | 4 | + Proposed density | | | | | | | |
 | 5 | + Proposed neighbour score | | | | | | | |
 | 6 | + Proposed neighbour weights | | | | | | | |
-| 7 | + Proposed anomaly metric (**default HMSDE**) | | | | | | | |
+| 7 | + Proposed anomaly metric (**default HyperMSDE**) | | | | | | | |
 
 ---
 
@@ -468,8 +468,8 @@ Use the cumulative ablation from Section 10.
 
 | Variant | Target set jointly used? | Mean AUROC | Mean AUPRO |
 |---|---:|---:|---:|
-| HMSDE — inductive | No | | |
-| **HMSDE — transductive** | **Yes** | | |
+| HyperMSDE — inductive | No | | |
+| **HyperMSDE — transductive** | **Yes** | | |
 | **Δ** | | | |
 
 ---
@@ -499,8 +499,8 @@ The following should primarily support the main story rather than compete with i
 - Full few-shot benchmark tables.
 - Per-modality data-efficiency tables.
 - Per-encoder K-shot results.
-- Leave-one-out HMSDE ablation.
-- Additional HMSDE configuration ablations.
+- Leave-one-out HyperMSDE ablation.
+- Additional HyperMSDE configuration ablations.
 - Detailed method-property table.
 - Hyperparameter sensitivity.
 - Computational cost.
@@ -513,21 +513,21 @@ The following should primarily support the main story rather than compete with i
 
 ## 14.1 Method-level comparison
 
-**HMSDE (CLIP)** vs other detectors using the same OpenAI CLIP representation.
+**HyperMSDE (CLIP)** vs other detectors using the same OpenAI CLIP representation.
 
 Question:
 
-> **Does HMSDE provide an advantage over standard text-guided, geometric, density, and subspace anomaly detectors when the representation is held fixed?**
+> **Does HyperMSDE provide an advantage over standard text-guided, geometric, density, and subspace anomaly detectors when the representation is held fixed?**
 
 ---
 
 ## 14.2 Representation-level comparison
 
-**HMSDE** across five pretrained encoders.
+**HyperMSDE** across five pretrained encoders.
 
 Question:
 
-> **How much does the choice of pretrained representation affect HMSDE?**
+> **How much does the choice of pretrained representation affect HyperMSDE?**
 
 ---
 
@@ -545,15 +545,15 @@ from
 \text{detector quality}.
 \]
 
-The strongest evidence for the proposed approach is not simply that HMSDE achieves high AUROC, but that:
+The strongest evidence for the proposed approach is not simply that HyperMSDE achieves high AUROC, but that:
 
-> **HMSDE consistently extracts more useful anomaly information from the same representation than conventional alternatives.**
+> **HyperMSDE consistently extracts more useful anomaly information from the same representation than conventional alternatives.**
 
 ---
 
 ## 14.4 Best4
 
-**HMSDE (Best4)** demonstrates the performance achievable when HMSDE is paired with the strongest candidate medical representation.
+**HyperMSDE (Best4)** demonstrates the performance achievable when HyperMSDE is paired with the strongest candidate medical representation.
 
 The encoder-selection procedure must not use final test labels.
 
@@ -575,7 +575,7 @@ The paper should ultimately tell the following story.
 
 **Table 1**
 
-HMSDE performs competitively in zero-shot anomaly detection while being:
+HyperMSDE performs competitively in zero-shot anomaly detection while being:
 
 - training-free,
 - unsupervised,
@@ -584,11 +584,11 @@ HMSDE performs competitively in zero-shot anomaly detection while being:
 
 ↓
 
-### 3. Establish that HMSDE itself contributes
+### 3. Establish that HyperMSDE itself contributes
 
 **Table 2**
 
-When the encoder is held fixed, HMSDE outperforms conventional detectors.
+When the encoder is held fixed, HyperMSDE outperforms conventional detectors.
 
 Therefore the result is not simply:
 
@@ -596,7 +596,7 @@ Therefore the result is not simply:
 
 Instead:
 
-> **HMSDE extracts additional anomaly-relevant information from the pretrained embedding geometry.**
+> **HyperMSDE extracts additional anomaly-relevant information from the pretrained embedding geometry.**
 
 ↓
 
@@ -604,7 +604,7 @@ Instead:
 
 **Table 3**
 
-HMSDE works across multiple pretrained medical representations.
+HyperMSDE works across multiple pretrained medical representations.
 
 Therefore the principle is not restricted to one encoder.
 
@@ -614,7 +614,7 @@ Therefore the principle is not restricted to one encoder.
 
 **Figure 1**
 
-HMSDE starts at **K = 0** and can incorporate increasing amounts of normal target information.
+HyperMSDE starts at **K = 0** and can incorporate increasing amounts of normal target information.
 
 This connects zero-shot and few-shot detection through a single data-efficiency curve.
 
@@ -624,7 +624,7 @@ This connects zero-shot and few-shot detection through a single data-efficiency 
 
 **Table 4**
 
-The cumulative ablation identifies which modifications to original HMSDE produce the improvement.
+The cumulative ablation identifies which modifications to original HyperMSDE produce the improvement.
 
 ↓
 
@@ -648,7 +648,7 @@ Determine whether the effect of target support depends on the underlying pretrai
 
 The central methodological positioning should therefore be:
 
-> **We investigate whether the geometry of pretrained medical-image embeddings can be directly exploited for zero-shot anomaly detection without anomaly labels, target-task training, or target support examples. We show that HMSDE can extract anomaly-relevant structure from these representations in a training-free, unsupervised, and transductive manner, and that the approach remains effective across multiple pretrained medical encoders.**
+> **We investigate whether the geometry of pretrained medical-image embeddings can be directly exploited for zero-shot anomaly detection without anomaly labels, target-task training, or target support examples. We show that HyperMSDE can extract anomaly-relevant structure from these representations in a training-free, unsupervised, and transductive manner, and that the approach remains effective across multiple pretrained medical encoders.**
 
 The paper is consequently positioned around:
 
@@ -658,7 +658,7 @@ The paper is consequently positioned around:
 \rightarrow
 \text{embedding geometry}
 \rightarrow
-\text{HMSDE}
+\text{HyperMSDE}
 \rightarrow
 \text{zero-shot anomaly detection}
 }
@@ -668,7 +668,7 @@ rather than:
 
 \[
 \boxed{
-\text{Existing HMSDE}
+\text{Existing HyperMSDE}
 \rightarrow
 \text{apply it to CLIP}
 }
