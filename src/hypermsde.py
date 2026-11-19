@@ -5,9 +5,10 @@ movement converges. The pipeline, in the order ``HypersphericalMeanShiftDensityE
 
 1. **Normalise** (``sphere``): 0 leaves the embeddings as they are and the loop runs in the raw space. 1 scales
    them to unit length and re-normalises them right after every shift, so every state the loop passes through
-   (and the output) lies on the sphere. 2 does the same after first centring the points on their Fréchet mean:
-   each is mapped to the tangent space there (log map), which removes the shared mean direction, and put back on
-   the sphere.
+   (and the output) lies on the sphere. 2 does the same after first subtracting the mean of the points and
+   normalising again (``unit(x - mean)``). 3 does the same after first centring the points on their Fréchet
+   mean: each is mapped to the tangent space there (log map), which removes the shared mean direction, and put
+   back on the sphere.
 2. **Density**: an empirical density per point, computed once on the initial points (or, with a ``density_fn``, at every iteration). A fuzzy k-nearest-neighbour graph is built; points are then compared as rows of that
    sparse graph (sparse matmul), and a point's density is the average number of other points within a
    radius, over a few shrinking radii.
@@ -46,7 +47,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_DEVICE = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
 
 METRICS = ("euclidean", "cosine")
-SPHERE_MODES = (0, 1, 2)
+SPHERE_MODES = (0, 1, 2, 3)
 
 # Rows handled at a time by every chunked step (neighbour searches, density, selection blocks, gathers).
 DEFAULT_CHUNK_SIZE = 1024
@@ -663,9 +664,11 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
     recompute_neighbors : 0 or None selects neighbours once, from the initial points; a positive N reselects
         every N iterations (iterations 0, N, 2N, ...), re-evaluating the neighbour weights.
     sphere : 0 runs in the raw feature space (no normalisation). 1 normalises the points onto the unit sphere and
-        back onto it after every shift. 2 is 1, after first centring the points on their Fréchet mean (see
-        ``spherical_center``); everything after it, including the output and the trajectory's first state, is in
-        the centred space. The mean is available as ``center_`` afterwards (``None`` unless 2).
+        back onto it after every shift. 2 is 1, after first subtracting the Euclidean mean of the unit-norm points
+        and normalising again. 3 is 1, after first centring the points on their Fréchet mean (see
+        ``spherical_center``). With 2 or 3, everything after the centring, including the output and the
+        trajectory's first state, is in the centred space. The mean is available as ``center_`` afterwards
+        (``None`` for 0 and 1).
     distance_strength, density_strength, stability_strength : the strengths of the default selection score
         and neighbour weight (see ``NeighborScore`` and ``NeighborWeight``); >= 0, 0 switches a factor off.
     h : kernel width of the distance term, a positive number, or "auto" (median distance to the ``k`` nearest neighbours,
@@ -775,11 +778,11 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         support : optional list of (d,) tensors (or an (s, d) tensor)
             High-mass support points. They interact with ``X`` only through ``bias_fn``: they are never neighbours
             and take no part in the density, the fuzzy graph or ``h``. They are mapped into the same space as ``X``
-            (normalised, and centred on the same Fréchet mean with ``sphere=2``), move only through ``step_fn``
+            (normalised, and centred with the same mean as ``X`` with ``sphere`` 2 or 3), move only through ``step_fn``
             and are available as ``support_`` afterwards. Requires ``bias_fn``.
         dist : {``"euclidean"``, ``"cosine"``}
             Distance used for the fuzzy graph, neighbour selection, ``h="auto"``, and ``score_fn``/``weight_fn``.
-            With ``sphere`` 1 or 2 the points always stay on the unit sphere.
+            With ``sphere`` 1, 2 or 3 the points always stay on the unit sphere.
         density_fn : optional callable
             Replaces the density. It is called at the start of every iteration, before neighbour selection.
             Without one, density is computed once from the initial points. The final density is ``density_``.
@@ -818,7 +821,7 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             Unit-norm points after the last iteration.
         metric :
             With ``metric_fn``, the sum of its per-iteration metric values; otherwise the (n,) sum of each point's
-            per-iteration step lengths (chords on the sphere with ``sphere`` 1 or 2).
+            per-iteration step lengths (chords on the sphere with ``sphere`` 1, 2 or 3).
         trajectory : list of (n, d) tensors
             Initial state followed by each iteration's state when ``keep_trajectory=True``; otherwise empty.
 
@@ -854,10 +857,15 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         x = unit(X) if self.sphere else X                                    # on the sphere from the start (sphere 1, 2)
         self.center_ = None
         if self.sphere == 2:
+            self.center_ = x.mean(0)                                         # Euclidean mean of the unit-norm points
+            x = unit(x - self.center_)                                       # mean-subtracted, back on the sphere
+        elif self.sphere == 3:
             x, self.center_ = spherical_center(x)                            # Fréchet-mean centred, still on the sphere
         if support is not None and self.sphere:
             support = unit(support)                                          # the same space as the points
             if self.sphere == 2:
+                support = unit(support - self.center_)
+            elif self.sphere == 3:
                 support = unit(_log_map(self.center_.unsqueeze(0), support))
         graph = _similarity_graph(x, self.n_neighbors, self.n_epochs, self.chunk_size, dist)
         if density_fn is None:

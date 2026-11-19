@@ -58,7 +58,7 @@ model:
   shift_threshold: 1.0e-4             # original: 1.0e-4
   chunk_size: 1024
   recompute_neighbors: 0              # original: 1 (reselect neighbours every iteration)
-  sphere: 2   # 0 raw feature space, 1 unit sphere, 2 unit sphere after Fréchet-mean centring. original: 0
+  sphere: 3   # 0 raw feature space, 1 unit sphere, 2 unit sphere after mean-subtraction, 3 unit sphere after Fréchet-mean centring. original: 0
   distance_strength: 1.0              # unused with score=original
   density_strength: 1.0               # original: 1.0 (weights = density counts)
   stability_strength: 1.0             # irrelevant without a stability function (stability stays 1)
