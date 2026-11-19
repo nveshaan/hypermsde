@@ -38,6 +38,20 @@ def unary_only(image_tensor, output_logits):
     return F.softmax(logits.squeeze(0), dim=0).cpu().numpy()
 
 
+def restore_extended_attention_mask() -> None:
+    """GroundingDINO's BERT wrapper calls BertModel.get_extended_attention_mask, which transformers 5 dropped."""
+    from transformers import BertModel
+    if hasattr(BertModel, "get_extended_attention_mask"):
+        return
+
+    def get_extended_attention_mask(self, attention_mask, input_shape=None, device=None, dtype=None):
+        dtype = dtype or self.dtype
+        extended = attention_mask[:, None, None, :] if attention_mask.dim() == 2 else attention_mask[:, None, :, :]
+        return (1.0 - extended.to(dtype)) * torch.finfo(dtype).min
+
+    BertModel.get_extended_attention_mask = get_extended_attention_mask
+
+
 @contextlib.contextmanager
 def cuda_alias(device: str):
     """The authors' code picks `"cuda" if torch.cuda.is_available() else "cpu"` in places, which on a Mac would put
@@ -82,6 +96,7 @@ class UniVAD:
         self.data_dir = repo / "data" / "delta" / modality
         self.data_dir.mkdir(parents=True, exist_ok=True)
         torch.manual_seed(seed)
+        restore_extended_attention_mask()
         with contextlib.chdir(repo), cuda_alias(self.device):
             import UniVAD as module
             import models.component_segmentaion as segmentation
