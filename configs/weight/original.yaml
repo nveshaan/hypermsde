@@ -1,5 +1,5 @@
 # The HyperMSDE paper's weights (arXiv:2602.03293): each selected neighbour counts by its density alone.
 name: original
 fn:
-  _target_: src.weight.original
-  _partial_: true
+  _target_: src.weight.Original
+  static: true   # density=original is static, so the weights only change when neighbours are reselected

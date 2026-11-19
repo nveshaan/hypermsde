@@ -28,6 +28,9 @@ dataset: null   # null runs every dataset listed in configs/datasets/<modality>.
 seed: 42
 cap: 10000
 dist: euclidean
+# Space of the graph/density/score/weight stages, frozen for the whole run: {graph: 1, density: 3, ...}, modes as model.sphere (0-3).
+# null = every stage sees the current points. With model.sphere 2 or 3, a stage set to 2 or 3 needs a static component.
+sphere: null
 # Few-shot: number of normal samples (label 0, drawn with `seed`) taken out of the data and passed to HyperMSDE as
 # support points, which pull every point through the bias function. 0 = zero-shot, no support.
 support: 0

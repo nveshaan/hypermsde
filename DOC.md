@@ -1,6 +1,6 @@
 # HyperMSDE
 
-Mean-shift density enhancement (HyperMSDE) of embeddings, in [`src/hypermsde.py`](src/hypermsde.py), with the defaults of every replaceable function in the same file. The alternative `Original` density, metric, score and weight of the paper are in [`src/density.py`](src/density.py), [`src/metric.py`](src/metric.py), [`src/score.py`](src/score.py) and [`src/weight.py`](src/weight.py). Every point is repeatedly moved towards a weighted mean of its neighbours until the movement converges, and the embeddings stay on the unit sphere throughout. Only `torch` is required.
+Mean-shift density enhancement (HyperMSDE) of embeddings, in [`src/hypermsde.py`](src/hypermsde.py), with the default of every replaceable component (a class with a `static` flag) in the same file. The alternative `Original` density, metric, score and weight of the paper are in [`src/density.py`](src/density.py), [`src/metric.py`](src/metric.py), [`src/score.py`](src/score.py) and [`src/weight.py`](src/weight.py). Every point is repeatedly moved towards a weighted mean of its neighbours until the movement converges, and the embeddings stay on the unit sphere throughout. Only `torch` is required.
 
 ```python
 import torch
@@ -19,32 +19,11 @@ shifted, movement, trajectory = model(X)
 `forward` runs these stages in order.
 
 1. **Normalise** (`sphere`). With `sphere=0` nothing is normalised and the whole loop runs in the raw feature space. With 1 the input is scaled to unit length, with 2 it is also mean-subtracted and normalised again, and with 3 it is also centred on its Fréchet mean. In all three, points are re-normalised immediately after every shift, so every state the loop passes through, every trajectory entry and the output are unit-norm. (A zero vector has no direction: it is pulled along by its neighbours and is unit-norm after the first shift.)
-2. **Density** of every point. By default it is the adaptive angular k-NN estimate `Density`, computed **once**, on the initial points (see [The densities](#the-densities)). The UMAP fuzzy graph of the initial points is built in any case, kept, and handed to the density, score, weight and stability functions. A `density_fn` replaces the default; unless it is marked `static`, it is called at the start of every iteration instead (see [Replacing the density, ...](#replacing-the-density-the-selection-score-the-neighbour-weights-and-the-stability-update)).
+2. **Density** of every point. By default it is the adaptive angular k-NN estimate `Density` (see [The densities](#the-densities)), which is **not static**: it is re-estimated on the current points at the start of every iteration. A static density (`Density(static=True)`, or `Original`) is computed once, at the first iteration. The UMAP fuzzy graph of the initial points is built in any case, kept, and handed to the density, score, weight and stability components. A `density_fn` replaces the default (see [Replacing the density, ...](#replacing-the-density-the-selection-score-the-neighbour-weights-and-the-stability-update)).
 3. **Select neighbours.** In the geometry chosen by `dist` (Euclidean or cosine) of the current points, every other point is scored by `Score` and the `k` best are kept: with the default score `density^a * stability^b * exp(-c * d^2 / (2 h^2))`, so a dense, stable point can outrank a closer, sparse one. All points are candidates (no distance pre-filter) and a point is never its own neighbour. Candidates with a positive score rank by score; if fewer than `k` have one, the remaining slots go to the nearest candidates.
-4. **Weights.** Each selected neighbour gets a weight from `Weight` (default `density^a * stability^b`); weights of picks that violate the label mask are zeroed and rows are normalised to sum to 1. A point whose weights are all zero stays where it is. The default weights are computed when neighbours are selected, and again at the start of every iteration if a `stability_fn` or a non-static `density_fn` is given (the weights depend on both); a `weight_fn` you pass is evaluated at the start of every iteration, with the current distances to the selected neighbours.
+4. **Weights.** Each selected neighbour gets a weight from `Weight` (default `density^a * stability^b`); weights of picks that violate the label mask are zeroed and rows are normalised to sum to 1. A point whose weights are all zero stays where it is. The weights are always computed when neighbours are selected. If the weight is **not static** (the default `Weight` is not) they are also computed at the start of every other iteration, with the current distances to the selected neighbours and the current density and stability; a static weight (`Weight(static=True)`) is computed only when neighbours are selected, so it only makes sense with a static density and stability.
 5. **Step.** `mean = W @ X` with `W` a sparse `(n, n)` matrix holding the `n*k` normalised weights (one sparse matmul), then `x' = x + learning_rate * (mean - x)`, plus `bias` from `bias_fn` when `support` is given, normalised back onto the sphere unless `sphere=0`.
-6. **Repeat** until the mean per-point movement falls below `shift_threshold` (convergence) or `max_iters_shift` iterations have run. With `recompute_neighbors = N > 0`, stage 3 (the neighbour selection) is redone every `N` iterations on the current points (iterations 0, N, 2N, ...); a static density is never recomputed. A non-static `density_fn`, a `weight_fn`, a `stability_fn` and a `metric_fn`, if given, run in every iteration regardless of `recompute_neighbors`. Within an iteration the order is: density update (`density_fn`) → select neighbours (if due) → weights → support bias and step (`bias_fn`, `step_fn`) → step → stability update (`stability_fn`) → metric update (`metric_fn`).
-
-## The densities
-
-Both are callables with the `density_fn` signature below, computed once from the initial points (they carry `static = True`). `Density` is in [`src/hypermsde.py`](src/hypermsde.py) and `Original` in [`src/density.py`](src/density.py).
-
-**`Density(k=20, clip=3.0, chunk_size=1024)`**, the default: adaptive angular k-NN on the hypersphere.
-
-1. Normalise the points and take the chord distance `sqrt(2 - 2 x_i . x_j)` (the Euclidean distance of unit vectors) to the `k` nearest other points; `r_ij` is the distance to the `j`-th one.
-2. Intrinsic dimension by the k-NN maximum-likelihood estimator, one value for all points: `D = [mean_i mean_{j<k} log(r_ik / r_ij)]^-1`.
-3. Raw density `q_i = -D log(r_ik)`: a small neighbour radius means a dense point.
-4. `z_i = (q_i - mean(q)) / std(q)` and the density is `exp(clip(z_i, -clip, clip))`, so it lies in `[exp(-clip), exp(clip)]` and is always positive. High means dense (likely normal), low means sparse (potentially anomalous).
-
-`k` is lowered to `n - 1` for a small set; with fewer than 3 points the density is 1.0 everywhere. The `dist` of `forward` does not affect it. It uses the points as they are at the first iteration (so after any `sphere` centring).
-
-**`Original(nbd_sample_count_threshold=70, max_iters_weight_count=4, satisfiability_proportion=0.3, chunk_size=1024)`**: the density of the paper (arXiv:2602.03293), counted in the space of the rows of the fuzzy graph.
-
-- compare points as rows of the sparse fuzzy graph: distances come from one sparse-times-dense matmul `S @ chunk.T` per chunk of rows;
-- find the smallest radius at which at least `satisfiability_proportion` of the points have more than `nbd_sample_count_threshold` others inside it (bisection, relaxed once if it fails);
-- a point's density is its number of other points within the radius, averaged over `max_iters_weight_count` radii shrinking linearly to zero.
-
-In the Hydra configs, `density=default` is `Density` and `density=original` is `Original`.
+6. **Repeat** until the mean per-point movement falls below `shift_threshold` (convergence) or `max_iters_shift` iterations have run. With `recompute_neighbors = N > 0`, stage 3 (the neighbour selection) is redone every `N` iterations on the current points (iterations 0, N, 2N, ...); a static density is never recomputed. A non-static density, a non-static weight, a non-static `stability_fn` and the `metric_fn` run in every iteration regardless of `recompute_neighbors`. Within an iteration the order is: density update (`density_fn`) → select neighbours (if due) → weights → support bias and step (`bias_fn`, `step_fn`) → step → stability update (`stability_fn`) → metric update (`metric_fn`).
 
 ## Constructor
 
@@ -61,7 +40,7 @@ The arguments up to `device` are those of the original HyperMSDE (arXiv:2602.032
 | `keep_trajectory` | `False` | Also return the state after every iteration. |
 | `chunk_size` | 1024 | Rows handled at a time by **every** chunked step, which bounds the memory of the run: the exact neighbour searches (the fuzzy graph, the default density and `h="auto"`), the graph-space distances of `Original`, the `(chunk, n)` blocks of the neighbour selection, and the `(chunk, k, d)` gathers of the live neighbour distances and of the weighted-mean fallback. Lower it if memory runs out. In principle it can change results through floating-point rounding in the distances (a different block shape can round differently); in tests it did not: sizes from 32 to 4096 gave identical outputs on synthetic data, and sizes from 256 to 4096 on ARMD OCT embeddings (MPS), with the same run time to within about 5%. |
 | `device` | auto | `"mps"`, `"cuda"` or `"cpu"`; inputs are moved there. |
-| `recompute_neighbors` | 0 | 0 / `None`: select neighbours once; `N > 0`: reselect every `N` iterations. |
+| `recompute_neighbors` | 0 | 0 / `None`: select neighbours once; `N > 0`: reselect every `N` iterations (never, if the `score_fn` is static). |
 | `sphere` | 1 | 0: no normalisation, the loop runs in the raw feature space. 1: normalise onto the unit sphere, and back onto it after every shift. 2: as 1, after first subtracting the Euclidean mean of the unit-norm points and normalising again, `normalise(x - mean(x))`; it is not distance-preserving, and the mean is `model.center_`. 3: as 1, after first centring the points on their Fréchet (Karcher) mean: each is mapped to the tangent space at the mean (log map) and put back on the sphere, i.e. `normalise(x - (x·mu) mu)`, which removes the shared mean direction (every point becomes orthogonal to the mean). It does not spread the points evenly. With 2 and 3, everything after the centring (density, selection, output, the trajectory's first state, `movement`) is in the centred space and the output is **not** mapped back; the mean is `model.center_` (`None` for 0 and 1). |
 | `distance_strength` | 1.0 | Strength `c` of the distance term of the default selection score. |
 | `density_strength` | 1.0 | Strength `a` of the density term, in the default selection score and neighbour weight. |
@@ -70,7 +49,7 @@ The arguments up to `device` are those of the original HyperMSDE (arXiv:2602.032
 
 A strength is a number `>= 0`; 0 switches that factor off and larger values weight it more (they are exponents on density and stability, and a multiplier on the squared distance in the kernel).
 
-## `forward(X, labels=None, support=None, dist="euclidean", density_fn=None, score_fn=None, weight_fn=None, stability_fn=None, metric_fn=None, bias_fn=None, step_fn=None)`
+## `forward(X, labels=None, support=None, dist="euclidean", density_fn=None, score_fn=None, weight_fn=None, stability_fn=None, metric_fn=None, bias_fn=None, step_fn=None, sphere=None)`
 
 | Argument | Meaning |
 | --- | --- |
@@ -78,17 +57,28 @@ A strength is a number `>= 0`; 0 switches that factor off and larger values weig
 | `labels` | `(n,)` integer labels restricting neighbour selection: every point may only pick neighbours labelled 0, whatever its own label. A point with no valid neighbour is left where it is (with `support`, it still receives the bias). |
 | `support` | Optional list of `(d,)` tensors (or an `(s, d)` tensor): high-mass support points that act on `X` only through `bias_fn` (default `Bias`). See [Support points](#support-points). |
 | `dist` | `"euclidean"` (default) or `"cosine"` (`1 - cos`; on the unit sphere this is half the squared Euclidean distance, so it orders pairs the same way but on a different scale, which matters for `h` and the distance term). It sets the distance of the whole run: the k-NN that builds the fuzzy graph, the neighbour selection, `h="auto"`, and the `dist` that `score_fn` and `weight_fn` receive. The points always stay on the unit sphere. Any other value raises a `ValueError`. |
-| `density_fn` | Replacement for the density. Called at the start of **every** iteration, before the neighbours are selected, unless it has a true `static` attribute: then it is called once, at the first iteration, and does not make the weights be re-evaluated every iteration. Without one, `Density` is used. The final density is available as `model.density_`. |
+| `density_fn` | Replacement for the density. Called at the start of **every** iteration, before the neighbours are selected, unless it is static: then it is called once, at the first iteration. Without one, `Density` (not static) is used. The final density is available as `model.density_`. |
 | `score_fn` | Replacement for the selection score. Called whenever neighbours are selected, including the initial selection, so with `recompute_neighbors=0` it defines the single neighbour graph the run uses. |
-| `weight_fn` | Replacement for the neighbour weights of the weighted mean. Evaluated at the start of **every** iteration, with the current distances and stability scores. The default is used when it is not given. |
-| `stability_fn` | Optional callable that updates the stability scores (`(n,)`, in `[0, 1]`, higher = more stable) after every iteration. It receives the new and previous positions. Without one, `Stability` is used, which does nothing: every point stays at 1.0. See [Stability](#stability). |
-| `metric_fn` | Optional callable evaluated after every iteration. Its per-iteration values are summed and returned. Without one, `Metric` is used: the `(n,)` summed movement (`Original` of [`src/metric.py`](src/metric.py) does the same). |
+| `weight_fn` | Replacement for the neighbour weights of the weighted mean. Evaluated whenever neighbours are selected and, unless it is static, at the start of every other iteration too, with the current distances and stability scores. `Weight` (not static) is used when it is not given. |
+| `stability_fn` | Optional component that updates the stability scores (`(n,)`, in `[0, 1]`, higher = more stable) after every iteration. It receives the new and previous positions. Without one, `Stability` is used, which does nothing: every point stays at 1.0. See [Stability](#stability). |
+| `metric_fn` | Optional component evaluated after every iteration. Its per-iteration values are summed and returned. Without one, `Metric` is used: the `(n,)` summed movement (`Original` of [`src/metric.py`](src/metric.py) does the same). |
 | `bias_fn` | The pull of the support on the points. Without one, `Bias` is used: a step of `learning_rate` towards the mean of the support points. Called every iteration; its `(n, d)` result is added to every point's step, outside the learning rate. |
 | `step_fn` | Optional step of the support points, called every iteration with the same arguments as `bias_fn`. Without one, `Step` is used, which does nothing: the support stays where it is. Needs `support`. |
+| `sphere` | Optional dict `{stage: mode}` giving a stage its own space. `stage` is `"graph"` (the fuzzy graph), `"density"`, `"score"` (the distances of the neighbour selection and `h="auto"`) or `"weight"` (the live neighbour distances); `mode` is 0 (raw), 1 (unit), 2 (mean-subtracted, unit) or 3 (Fréchet-centred), as for the model's `sphere`. The raw `X` is mapped **once**, before the iterations, and that copy stays frozen for the whole run, so such a stage ignores the moving points. A stage that is not in the dict sees the current points, in the space of the model's `sphere`. The other stages (weighted mean, bias, step, stability, metric) always use the space of the model, and any other key raises a `ValueError`. With the model's `sphere` 0 or 1 nothing else is checked; with 2 or 3, a stage set to 2 or 3 needs a **static** component (`"graph"` always qualifies), else a `ValueError`. |
 
 ### Replacing the density, selection score, neighbour weights, stability update, returned metric and support functions
 
-These are plain callables that carry their own parameters. Besides the arguments below, all of them receive and return the **shared memory dict** (next section), and all of them receive the **0-based index of the current iteration** and the **iteration cap** `n_iters` (`max_iters_shift`; a run may stop earlier by convergence), so they can change over the run, and the **UMAP fuzzy graph** that was computed for the initial points (below). The defaults, all in `src/hypermsde.py`, are the callable classes `Density(k, clip, chunk_size)` for the density, `Score(distance_strength, density_strength, stability_strength)` and `Weight(density_strength, stability_strength)`; `Metric()`, `Bias()`, and `Stability()` and `Step()` which do nothing (the stability stays 1.0 for every point and the support stays put); the last two are static, so `forward` skips them.
+These are instances of `Component` (in `src/hypermsde.py`), classes that carry their own parameters; a bare function or lambda raises a `TypeError`. A component implements `__call__` with the signature below and has a **`static`** flag (class attribute, `False` unless the class says otherwise; `Component(static=...)`, and every default's constructor, overrides it per instance):
+
+| component | `static=True` means |
+| --- | --- |
+| density | computed once, at the first iteration (default `Density`: `False`; `Original`: `True`) |
+| weight | prepared only when neighbours are selected, not at every iteration (default `Weight` and `Original`: `False`) |
+| stability, step | does nothing, so `forward` never calls it (defaults `Stability` and `Step`: `True`) |
+| score | neighbours are selected once, at the first iteration, whatever `recompute_neighbors` says (default `Score` and `Original`: `False`) |
+| metric, bias | informational only: always called when due |
+
+Besides the arguments below, all of them receive and return the **shared memory dict** (next section), and all of them receive the **0-based index of the current iteration** and the **iteration cap** `n_iters` (`max_iters_shift`; a run may stop earlier by convergence), so they can change over the run, and the **UMAP fuzzy graph** that was computed for the initial points (below). The defaults, all in `src/hypermsde.py`, are the callable classes `Density(k, clip, chunk_size)` for the density, `Score(distance_strength, density_strength, stability_strength)` and `Weight(density_strength, stability_strength)`; `Metric()`, `Bias()`, and `Stability()` and `Step()` which do nothing (the stability stays 1.0 for every point and the support stays put); the last two are static, so `forward` skips them. `Original` in `src/score.py` and `src/weight.py` are the paper's score and weight.
 
 ```python
 density_fn(x, density, stability, iteration, n_iters, graph, memory)
@@ -133,24 +123,24 @@ step_fn(dist, density, stability, h, learning_rate, iteration, n_iters, memory)
     # step: (s, d), finite; added to the support points
 ```
 
-**Memory.** At the start of `forward`, before the first iteration, one empty dict is created. **Every** function receives it after its regular arguments and returns it, updated, after its result as `(result, memory)`; the returned dict is what the next call (of any of the functions) receives. It is a plain dict, so the functions can keep running statistics, counters or caches in it, and read what another function wrote (use distinct keys; nothing enforces ownership). A new `forward` call starts with an empty dict again; the final one is available as `model.memory_`. `score_fn` is called once per block of `chunk_size` rows, so the memory passes through the blocks in turn within a selection. A function that returns anything other than a 2-tuple whose second entry is a dict raises a `ValueError`; the default `Score` and `Weight` pass the memory through untouched.
+**Memory.** At the start of `forward`, before the first iteration, one empty dict is created. **Every** component receives it after its regular arguments and returns it, updated, after its result as `(result, memory)`; the returned dict is what the next call (of any of the components) receives. It is a plain dict, so the components can keep running statistics, counters or caches in it, and read what another component wrote (use distinct keys; nothing enforces ownership). A new `forward` call starts with an empty dict again; the final one is available as `model.memory_`. `score_fn` is called once per block of `chunk_size` rows, so the memory passes through the blocks in turn within a selection. A component that returns anything other than a 2-tuple whose second entry is a dict raises a `ValueError`; the default `Score` and `Weight` pass the memory through untouched.
 
-| function | called | `iteration` is |
+| component | called | `iteration` is |
 | --- | --- | --- |
-| `density_fn` | at the start of every iteration, before any selection (once, at the first, if `static`) | the iteration about to run |
+| `density_fn` | at the start of every iteration, before any selection (once, at the first, if static) | the iteration about to run |
 | `score_fn` | whenever neighbours are selected: at the start, and every `recompute_neighbors` iterations after | the iteration whose step will use the selected neighbours |
-| `weight_fn` | at the start of every iteration, after any selection | the iteration whose step will use the weights |
-| `stability_fn` | after every iteration | the iteration that just finished |
+| `weight_fn` | whenever neighbours are selected, and at every other iteration unless static, after any selection | the iteration whose step will use the weights |
+| `stability_fn` | after every iteration (never, if static) | the iteration that just finished |
 | `metric_fn` | after every iteration | the iteration that just finished |
 | `bias_fn` | every iteration, after the weights, before the step | the iteration whose step will use the bias |
 | `step_fn` | every iteration, right after `bias_fn` | the iteration whose step it is |
 
 **The fuzzy graph.** The graph is a UMAP-style fuzzy `n_neighbors`-nearest-neighbour graph of the initial points: every point has a per-point scale, an edge to each of its `n_neighbors` nearest points, the two directions of a pair are combined by fuzzy union, and edges weaker than `max / n_epochs` are dropped. Weights are in `(0, 1]`. There is one entry per directed nearest-neighbour edge (about `n_neighbors` per point), so the matrix is **not** symmetric: on 3,240 ARMD OCT embeddings (CLIP) about 58% of the edges also exist in the reverse direction. It is computed **once**, before the first iteration, and is the same for the whole run. Each function gets the view that fits its other arguments: the `(chunk, n)` dense rows aligned with `dist` for `score_fn` (0 where there is no edge), the `(n, k)` values for the selected `(point, neighbour)` pairs for `weight_fn` (0 where a selected neighbour is not a graph neighbour; this differs from the graph neighbours because selection also looks at density), and the whole `(n, n)` coalesced sparse tensor for `density_fn`, `stability_fn` and `metric_fn`.
 
-Within an iteration the order is: density update → select neighbours (if due) → weights → support bias and step → step → stability update → metric update. A function with an older signature (without `iteration`, `n_iters`, `graph` or the memory) raises a `TypeError`. `dist` is the distance chosen by the `dist` argument of `forward`; for `weight_fn` it is recomputed from the current positions every iteration. Shape or value violations raise `ValueError`. Examples:
+Within an iteration the order is: density update → select neighbours (if due) → weights → support bias and step → step → stability update → metric update. A component with an older signature (without `iteration`, `n_iters`, `graph` or the memory) raises a `TypeError`. `dist` is the distance chosen by the `dist` argument of `forward`; for `weight_fn` it is recomputed from the current positions at every iteration it is prepared. Shape or value violations raise `ValueError`. Examples:
 
 ```python
-from src.hypermsde import hypermsde, Score, Weight
+from src.hypermsde import hypermsde, Component, Density, Score, Weight
 import torch
 
 model = hypermsde(k=30, recompute_neighbors=1)
@@ -159,65 +149,89 @@ model = hypermsde(k=30, recompute_neighbors=1)
 shifted, _, _ = model(X, score_fn=Score(distance_strength=0.5, density_strength=1, stability_strength=2))
 
 # a custom score with its own parameter: ignore distance beyond a cutoff
-def cutoff_score(dist, density, stability, h, iteration, n_iters, graph, memory, cutoff=3.0):
-    return density * stability * (dist < cutoff * h), memory
+class CutoffScore(Component):
+    def __init__(self, cutoff=3.0):
+        super().__init__()
+        self.cutoff = cutoff
+    def __call__(self, dist, density, stability, h, iteration, n_iters, graph, memory):
+        return density * stability * (dist < self.cutoff * h), memory
 
-# distance-aware neighbour weights: attraction decays with the points' current distance
-def gravity_weight(dist, density, stability, h, iteration, n_iters, graph, memory):
-    return density * stability * torch.exp(-dist.square() / (2 * h * h)), memory
-shifted, _, _ = model(X, weight_fn=gravity_weight)
+# distance-aware neighbour weights: attraction decays with the points' current distance (not static: the
+# distances change at every iteration)
+class GravityWeight(Component):
+    def __call__(self, dist, density, stability, h, iteration, n_iters, graph, memory):
+        return density * stability * torch.exp(-dist.square() / (2 * h * h)), memory
+shifted, _, _ = model(X, weight_fn=GravityWeight())
 
 # a schedule: let the distance matter more and more as the run progresses
-class AnnealedScore:
+class AnnealedScore(Component):
     def __init__(self, start=0.2, end=3.0):
+        super().__init__()
         self.start, self.end = start, end
     def __call__(self, dist, density, stability, h, iteration, n_iters, graph, memory):
         strength = self.start + (self.end - self.start) * iteration / max(n_iters - 1, 1)
         return Score(distance_strength=strength)(dist, density, stability, h, iteration, n_iters, graph, memory)
 shifted, _, _ = model(X, score_fn=AnnealedScore())
 
-# using the fuzzy graph: neighbours that are also graph neighbours count extra
-def connected_weight(dist, density, stability, h, iteration, n_iters, graph, memory):
-    return density * stability * (0.1 + graph), memory
-shifted, _, _ = model(X, weight_fn=connected_weight)
+# using the fuzzy graph: neighbours that are also graph neighbours count extra. Static: it reads nothing that
+# changes (density and stability stay at their initial values here), so it is prepared only at selection
+class ConnectedWeight(Component):
+    static = True
+    def __call__(self, dist, density, stability, h, iteration, n_iters, graph, memory):
+        return density * stability * (0.1 + graph), memory
+shifted, _, _ = model(X, density_fn=Density(static=True), weight_fn=ConnectedWeight())
 
 # a density that follows the points: the number of others within a radius of their current positions
-def live_density(x, density, stability, iteration, n_iters, graph, memory, radius=1.0):
-    return (torch.cdist(x, x) < radius).sum(dim=1).float() - 1, memory
-shifted, _, _ = model(X, density_fn=live_density)
+class LiveDensity(Component):
+    def __init__(self, radius=1.0):
+        super().__init__()
+        self.radius = radius
+    def __call__(self, x, density, stability, iteration, n_iters, graph, memory):
+        return (torch.cdist(x, x) < self.radius).sum(dim=1).float() - 1, memory
+shifted, _, _ = model(X, density_fn=LiveDensity())
 
 # a stability that compares a point's displacement with the average displacement of its graph neighbours
-def moves_like_neighbours(moved, x, density, stability, h, iteration, n_iters, graph, memory):
-    displacement = moved - x
-    weight_sum = torch.sparse.mm(graph, torch.ones(x.shape[0], 1, device=x.device)).clamp_min(1e-9)
-    local = torch.sparse.mm(graph, displacement) / weight_sum
-    scores = torch.exp(-(displacement - local).norm(dim=1) / displacement.norm(dim=1).median().clamp_min(1e-9))
-    return scores, memory
-shifted, _, _ = model(X, stability_fn=moves_like_neighbours)
+class MovesLikeNeighbours(Component):
+    def __call__(self, moved, x, density, stability, h, iteration, n_iters, graph, memory):
+        displacement = moved - x
+        weight_sum = torch.sparse.mm(graph, torch.ones(x.shape[0], 1, device=x.device)).clamp_min(1e-9)
+        local = torch.sparse.mm(graph, displacement) / weight_sum
+        scores = torch.exp(-(displacement - local).norm(dim=1) / displacement.norm(dim=1).median().clamp_min(1e-9))
+        return scores, memory
+shifted, _, _ = model(X, stability_fn=MovesLikeNeighbours())
+
+# the density and the neighbour selection in their own frozen spaces, whatever the loop does
+shifted, _, _ = model(X, sphere={"density": 3, "score": 1})
 ```
 
-With `recompute_neighbors=0` the neighbour graph is fixed after the first selection, so a `score_fn` is called once; the weights, the density and the stability keep following the moving points through `weight_fn`, `density_fn` and `stability_fn`.
+The `sphere` dict only changes the space of the stages it names; with the model's own `sphere` 2 or 3, `sphere={"density": 3}` needs `density_fn=Density(static=True)`.
+
+With `recompute_neighbors=0` the neighbour graph is fixed after the first selection, so a `score_fn` is called once; the weights, the density and the stability keep following the moving points as long as `weight_fn` and `density_fn` are not static.
 
 ### Stability
 
-Every point starts with stability 1.0. A `stability_fn` (a callable that carries its own parameters) updates the scores **after every iteration** from what the points just did; its signature is given above. `moved` and `x` are the new and previous unit positions, and `stability` contains the scores before this update (all 1.0 at the start), so running updates are possible.
+Every point starts with stability 1.0. A `stability_fn` (a component that carries its own parameters) updates the scores **after every iteration** from what the points just did; its signature is given above. `moved` and `x` are the new and previous unit positions, and `stability` contains the scores before this update (all 1.0 at the start), so running updates are possible.
 
-- **Timing.** The first neighbour selection and the first step use scores of 1.0, since there is no step yet. After that the updated scores feed the neighbour weights of the next iteration (re-evaluated every iteration) and, whenever neighbours are reselected (`recompute_neighbors > 0`), the selection score. With `recompute_neighbors=0` the neighbour graph itself is fixed by the initial scores, but the weights on it still follow the stability.
+- **Timing.** The first neighbour selection and the first step use scores of 1.0, since there is no step yet. After that the updated scores feed the neighbour weights of the next iteration (prepared at every iteration if the weight is not static, as the default is) and, whenever neighbours are reselected (`recompute_neighbors > 0`), the selection score. With `recompute_neighbors=0` the neighbour graph itself is fixed by the initial scores, but the weights on it still follow the stability.
 - **Result.** The final scores are available afterwards as `model.stability_` (all 1.0 without a `stability_fn`).
-- **A fixed set of scores** can be supplied with a closure, `stability_fn=lambda moved, x, density, stability, h, iteration, n_iters, graph, memory: (my_scores, memory)`; they take effect from the second iteration on.
-- **Cost.** Per iteration a `stability_fn` adds one call, and the weights are rebuilt (live distances `O(n k d)`, and the sparse weight matrix `O(n k log(n k))`). A `weight_fn` or a non-static `density_fn` costs the same without the stability call (plus the work of the function itself). Nothing is added when none of them is given, and the results are then identical to a run without these features.
+- **A fixed set of scores** can be supplied with a small `Component` whose `__call__` returns `(my_scores, memory)`; they take effect from the second iteration on.
+- **Cost.** Per iteration a `stability_fn` adds one call. A non-static weight (the default) rebuilds the weights every iteration (live distances `O(n k d)`, and the sparse weight matrix `O(n k log(n k))`), and a non-static density (the default) one k-NN search; `Density(static=True)` and `Weight(static=True)` give that cost up and the weights then follow stability only at the next selection.
 
 ```python
 import torch
 
-def movers_unstable(moved, x, density, stability, h, iteration, n_iters, graph, memory):
-    # a point that moves much more than the typical point in an iteration is unstable
-    size = (moved - x).norm(dim=1)
-    return torch.exp(-size / size.median().clamp_min(1e-9)), memory
+from src.hypermsde import Component
 
-class RunningStability:
+class MoversUnstable(Component):
+    # a point that moves much more than the typical point in an iteration is unstable
+    def __call__(self, moved, x, density, stability, h, iteration, n_iters, graph, memory):
+        size = (moved - x).norm(dim=1)
+        return torch.exp(-size / size.median().clamp_min(1e-9)), memory
+
+class RunningStability(Component):
     # an exponential moving average of the same score, with its own parameter
     def __init__(self, momentum=0.5):
+        super().__init__()
         self.momentum = momentum
     def __call__(self, moved, x, density, stability, h, iteration, n_iters, graph, memory):
         size = (moved - x).norm(dim=1)
@@ -242,11 +256,12 @@ history = model.memory_["median_step"]   # one entry per iteration
 - **Memory.** `dist` is a dense `s x n x d` tensor built every iteration: 16 support points, 10,000 points and `d = 1152` are about 0.7 GB in float32.
 
 ```python
-def pull(dist, density, stability, h, learning_rate, iteration, n_iters, memory):
-    return learning_rate * dist.mean(dim=0), memory      # towards the support's centroid
+class Pull(Component):
+    def __call__(self, dist, density, stability, h, learning_rate, iteration, n_iters, memory):
+        return learning_rate * dist.mean(dim=0), memory      # towards the support's centroid
 
 model = hypermsde()
-shifted, movement, _ = model(X, support=[X[i] for i in normal_idx], bias_fn=pull)
+shifted, movement, _ = model(X, support=[X[i] for i in normal_idx], bias_fn=Pull())
 ```
 
 ## Speed

@@ -118,6 +118,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
                   if cfg.get(comp) is not None and (comp not in SUPPORT_COMPONENTS or support is not None)]
     fns = {comp: None for comp in COMPONENTS}
     fns.update({comp: hydra.utils.instantiate(cfg[comp].fn) for comp in components if cfg[comp].fn is not None})
+    stage_spheres = OmegaConf.to_container(cfg.sphere) if cfg.get("sphere") else None
     subtypes = [int(c) for c in np.unique(labels) if c != 0]
     subtype_counts = {c: int((labels == c).sum()) for c in subtypes} if len(subtypes) > 1 else {}
 
@@ -129,7 +130,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         _, metric, _ = model(
             X, labels=run_labels, support=support, dist=cfg.dist, density_fn=fns["density"], score_fn=fns["score"],
             weight_fn=fns["weight"], stability_fn=fns["stability"],
-            metric_fn=fns["metric"], bias_fn=fns["bias"], step_fn=fns["step"],
+            metric_fn=fns["metric"], bias_fn=fns["bias"], step_fn=fns["step"], sphere=stage_spheres,
         )
         score = metric.detach().cpu().numpy()
         scores.append(score)
@@ -151,6 +152,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
             "encoder": cfg.encoder,
             "seed": cfg.seed,
             "dist": cfg.dist,
+            "sphere": stage_spheres,
             "support": cfg.support,
             "support_seed": cfg.support_seed,
             "n_samples": n,

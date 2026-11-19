@@ -3,14 +3,16 @@
 Every point of an embedding set is repeatedly moved towards a weighted mean of its neighbours until the
 movement converges. The pipeline, in the order ``HypersphericalMeanShiftDensityEnhancement.forward`` runs it:
 
-1. **Normalise** (``sphere``): 0 leaves the embeddings as they are and the loop runs in the raw space. 1 scales
+1. **Normalise** (``sphere``; ``forward(sphere={...})`` can give the graph, density, score and weight
+   their own frozen space): 0 leaves the embeddings as they are and the loop runs in the raw space. 1 scales
    them to unit length and re-normalises them right after every shift, so every state the loop passes through
    (and the output) lies on the sphere. 2 does the same after first subtracting the mean of the points and
    normalising again (``unit(x - mean)``). 3 does the same after first centring the points on their Fréchet
    mean: each is mapped to the tangent space there (log map), which removes the shared mean direction, and put
    back on the sphere.
 2. **Density**: a density per point, by default the adaptive angular k-NN estimate ``Density``,
-   computed once on the initial points (or, with a ``density_fn``, at every iteration unless it is static).
+   re-estimated on the current points at every iteration (pass ``Density(static=True)``, or any static ``density_fn``, to
+   compute it once, at the first iteration).
    ``src.density.Original`` is the density of the paper: points are compared as rows of the fuzzy
    k-nearest-neighbour graph (built here, from the initial points), and a point's density is the average number
    of other points within a radius, over a few shrinking radii.
@@ -26,10 +28,10 @@ movement converges. The pipeline, in the order ``HypersphericalMeanShiftDensityE
 Stability scores (values in [0, 1], higher = more stable) start at 1.0 for every point. Pass a ``stability_fn`` to
 ``forward`` and they are updated after every iteration from the previous and moved positions; the updated scores feed
 the next neighbour weights and, whenever neighbours are reselected, the selection score. The density, the selection score, the
-neighbour weights and the stability update can each be replaced by a callable (which carries its own parameters)
-passed to ``forward``; all of them receive the index of the current iteration and the iteration cap, so they can
-change over the run, and the UMAP fuzzy graph that was built for the density. ``forward`` also creates one empty
-dict before the first iteration; all the callables receive it and return it (updated) with their result, so they
+neighbour weights and the stability update can each be replaced by a ``Component`` (a class that carries its own
+parameters and a ``static`` flag) passed to ``forward``; all of them receive the index of the current iteration and the
+iteration cap, so they can change over the run, and the UMAP fuzzy graph that was built for the density. ``forward`` also
+creates one empty dict before the first iteration; all the components receive it and return it (updated) with their result, so they
 can remember things across calls and share them.
 
 Support points (``support``, e.g. known normal embeddings for few-shot inference) act as high-mass points: every
@@ -50,6 +52,7 @@ DEFAULT_DEVICE = "mps" if torch.backends.mps.is_available() else "cuda" if torch
 
 METRICS = ("euclidean", "cosine")
 SPHERE_MODES = (0, 1, 2, 3)
+SPHERE_STAGES = ("graph", "density", "score", "weight")   # the stages ``forward(sphere=...)`` can give a space of their own
 
 # Rows handled at a time by every chunked step (neighbour searches, density, selection blocks, gathers).
 DEFAULT_CHUNK_SIZE = 1024
@@ -120,6 +123,42 @@ def _call_with_memory(fn, args, memory, name):
     return result
 
 
+class Component:
+    """Base class of everything ``forward`` calls: the density, score, weight, stability, metric, bias and step.
+
+    ``static`` tells ``forward`` how often the component has to run (it can be overridden per instance with
+    ``Component(static=...)``):
+
+    - density: ``True`` evaluates it once, at the first iteration; ``False`` at the start of every iteration.
+    - weight: ``True`` prepares the neighbour weights only when neighbours are selected; ``False`` at every iteration.
+    - stability, step: ``True`` means it never changes anything, so ``forward`` does not call it.
+    - score: ``True`` selects neighbours only once, at the first iteration, whatever ``recompute_neighbors`` says.
+    - metric, bias: informational (always called when due).
+
+    Subclasses implement ``__call__`` with the signature documented on their own class.
+    """
+
+    static = False
+
+    def __init__(self, static=None):
+        if static is not None:
+            if not isinstance(static, bool):
+                raise ValueError(f"static must be a bool; got {static!r}")
+            self.static = static
+
+    def __call__(self, *args):
+        raise NotImplementedError(f"{type(self).__name__} must implement __call__")
+
+
+def _resolve(fn, default, name):
+    """``fn`` if given, else ``default``; either must be a ``Component``."""
+    fn = default if fn is None else fn
+    if not isinstance(fn, Component):
+        raise TypeError(f"{name} must be an instance of Component (a class with a `static` flag); "
+                        f"got {type(fn).__name__}")
+    return fn
+
+
 # ---------------------------------------------------------------------------------------------------------
 # 1. Normalise (``sphere``): centring on the mean of the points
 # ---------------------------------------------------------------------------------------------------------
@@ -152,6 +191,32 @@ def spherical_center(X):
     orthogonal to the mean. Returns ``(centered, mu (d,))``."""
     mu = frechet_mean(X)
     return unit(_log_map(mu, X)), mu[0]
+
+
+def _normalise(X, mode):
+    """``X`` mapped by ``sphere`` mode 0 (as is), 1 (unit rows), 2 (mean-subtracted, unit) or 3 (Fréchet-centred);
+    returns ``(points, center)`` with ``center`` the removed mean (``None`` for 0 and 1)."""
+    if mode == 0:
+        return X, None
+    x = unit(X)
+    if mode == 1:
+        return x, None
+    if mode == 2:
+        center = x.mean(0)                                                   # Euclidean mean of the unit-norm points
+        return unit(x - center), center
+    return spherical_center(x)                                               # Fréchet-mean centred, still on the sphere
+
+
+def _map_like(points, mode, center):
+    """``points`` (e.g. the support) mapped into the space ``_normalise`` put the data in, with its ``center``."""
+    if mode == 0:
+        return points
+    points = unit(points)
+    if mode == 2:
+        return unit(points - center)
+    if mode == 3:
+        return unit(_log_map(center.unsqueeze(0), points))
+    return points
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -280,8 +345,8 @@ def _graph_layout(S):
     return rows_sorted, cols_sorted, vals_sorted, row_ptr, row_norm_sq
 
 
-class Density:
-    """Adaptive angular k-NN density on the unit hypersphere (the default ``density_fn``).
+class Density(Component):
+    """Adaptive angular k-NN density on the unit hypersphere (the default density).
 
     1. Normalise every point, and take the chord distance ``sqrt(2 - 2 x_i . x_j)`` (the Euclidean distance of
        unit vectors) to the ``k`` nearest other points; ``r_ij`` is the distance to the j-th neighbour.
@@ -292,12 +357,12 @@ class Density:
        within ``[exp(-clip), exp(clip)]``.
 
     ``k`` is lowered to ``n - 1`` for a small set; with fewer than 3 points the density is 1.0 everywhere.
-    ``chunk_size`` is the number of rows handled at a time by the exact neighbour search.
+    ``chunk_size`` is the number of rows handled at a time by the exact neighbour search. It is not static: it is
+    re-estimated on the current points at every iteration (pass ``static=True`` to compute it once, on the initial ones).
     """
 
-    static = True
-
-    def __init__(self, k=20, clip=3.0, chunk_size=DEFAULT_CHUNK_SIZE):
+    def __init__(self, k=20, clip=3.0, chunk_size=DEFAULT_CHUNK_SIZE, static=None):
+        super().__init__(static)
         if isinstance(k, bool) or not isinstance(k, int) or k < 2:
             raise ValueError(f"k must be an integer >= 2; got {k!r}")
         if not clip > 0:
@@ -356,7 +421,7 @@ def median_neighbor_distance(X, k, chunk_size=DEFAULT_CHUNK_SIZE, metric="euclid
     return max(dist[:, 1:].median().item(), 1e-12)
 
 
-class Score:
+class Score(Component):
     """How attractive every candidate is to a point: ``density^a * stability^b * exp(-c * d^2 / (2 h^2))``.
 
     The default selection score. ``a``, ``b`` and ``c`` are the density, stability and distance strengths
@@ -378,7 +443,8 @@ class Score:
     once the positive scores run out (the nearest remaining candidates are taken). Scores must be finite.
     """
 
-    def __init__(self, distance_strength=1.0, density_strength=1.0, stability_strength=1.0):
+    def __init__(self, distance_strength=1.0, density_strength=1.0, stability_strength=1.0, static=None):
+        super().__init__(static)
         self.distance_strength = _check_strength("distance_strength", distance_strength)
         self.density_strength = _check_strength("density_strength", density_strength)
         self.stability_strength = _check_strength("stability_strength", stability_strength)
@@ -463,7 +529,7 @@ def neighbor_distances(X, indices, chunk_size=DEFAULT_CHUNK_SIZE, metric="euclid
 # ---------------------------------------------------------------------------------------------------------
 # 4. Weights: how much each selected neighbour pulls
 # ---------------------------------------------------------------------------------------------------------
-class Weight:
+class Weight(Component):
     """How much each selected neighbour pulls its point in the weighted mean: ``density^a * stability^b``.
 
     The default neighbour weight (distance is ignored, so every selected neighbour counts according to how
@@ -477,11 +543,15 @@ class Weight:
     fuzzy graph computed for the density between each point and each of its selected neighbours, 0 where the graph
     has no such edge), ``h`` the kernel width in use, ``iteration`` the 0-based index of the iteration whose step
     will use the weights and ``n_iters`` the iteration cap (``max_iters_shift``). It returns non-negative finite (n, k) weights, normalised per row
-    afterwards, so only their ratios matter. A weight function you pass is evaluated at the start of every
-    iteration; the default is evaluated only when something it depends on can change.
+    afterwards, so only their ratios matter.
+
+    The weights are always prepared when neighbours are selected. Unless the weight is ``static``, they are also
+    prepared at every other iteration, from the current distances, densities and stability scores. The default is
+    not static, because its density and stability can change; pass ``static=True`` when neither does.
     """
 
-    def __init__(self, density_strength=1.0, stability_strength=1.0):
+    def __init__(self, density_strength=1.0, stability_strength=1.0, static=None):
+        super().__init__(static)
         self.density_strength = _check_strength("density_strength", density_strength)
         self.stability_strength = _check_strength("stability_strength", stability_strength)
 
@@ -536,8 +606,8 @@ def weighted_mean(X, indices, w, W, chunk_size=DEFAULT_CHUNK_SIZE):
     return out
 
 
-class Bias:
-    """The default pull of the support points on the points (the ``bias_fn`` used when ``support`` is given).
+class Bias(Component):
+    """The default pull of the support points on the points (the bias used when ``support`` is given).
 
     A step of ``learning_rate`` towards the mean of the support points: ``learning_rate * dist.mean(0)``. The bias
     is added outside ``learning_rate``, so without it every point would jump onto the support mean.
@@ -552,10 +622,10 @@ class Bias:
         return learning_rate * dist.mean(0), memory
 
 
-class Step:
+class Step(Component):
     """The default step of the support points: none, they stay where they are.
 
-    It is marked ``static``, so ``forward`` does not call it. A replacement has the same signature as the bias,
+    It is static, so ``forward`` does not call it. A replacement has the same signature as the bias,
     ``step(dist, density, stability, h, learning_rate, iteration, n_iters, memory) -> (step, memory)``, and
     returns the (s, d) vectors added to the support points.
     """
@@ -583,11 +653,10 @@ def support_vectors(fn, diff, density, stability, h, learning_rate, iteration, n
 # ---------------------------------------------------------------------------------------------------------
 # 6. After every iteration: the stability update and the metric
 # ---------------------------------------------------------------------------------------------------------
-class Stability:
+class Stability(Component):
     """The default stability update: none, the scores stay at their initial 1.0.
 
-    It is marked ``static``, so ``forward`` does not call it and does not re-evaluate the weights every iteration
-    because of it. A replacement has the signature
+    It is static, so ``forward`` does not call it. A replacement has the signature
     ``stability(moved, x, density, stability, h, iteration, n_iters, graph, memory) -> (stability, memory)``.
     """
 
@@ -616,7 +685,7 @@ def update_stability(stability_fn, moved, x, density, stability, h, iteration, n
     return new.to(device=stability.device, dtype=stability.dtype), memory
 
 
-class Metric:
+class Metric(Component):
     """The default metric: how far each point moved in the iteration, ``|moved - x|``.
 
     Summed over the iterations it is the distance each point travelled (the sum of its step lengths; chords on
@@ -751,10 +820,61 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             raise ValueError("support must be finite")
         return support
 
+    def _check_input(self, X, dist):
+        """``X`` as a floating-point (n, d) tensor on the device; checks ``dist`` and the neighbour counts."""
+        X = torch.as_tensor(X)
+        if X.dim() != 2 or not X.is_floating_point():
+            raise ValueError(f"X must be a 2D floating-point tensor; got shape {tuple(X.shape)}, dtype {X.dtype}")
+        X = X.detach().to(self.device_name)
+        n = X.shape[0]
+        if dist not in METRICS:
+            raise ValueError(f"dist must be one of {METRICS}; got {dist!r}")
+        if not 1 <= self.k <= n - 1 or not 1 <= self.n_neighbors <= n:
+            raise ValueError(f"k={self.k} and n_neighbors={self.n_neighbors} need k <= n-1 and n_neighbors <= n "
+                             f"for n={n} points")
+        return X
+
+    def _check_sphere(self, sphere, stages):
+        """The per-stage ``sphere`` dict of ``forward`` as a plain dict (``{}`` for ``None``), validated.
+
+        ``stages`` maps the stage names that may be set to their components. With the init ``sphere`` 2 or 3, a
+        stage set to 2 or 3 has to be static: it is computed once, from the centre of the initial points."""
+        if sphere is None:
+            return {}
+        if not isinstance(sphere, dict):
+            raise TypeError(f"sphere must be a dict {{stage: mode}} or None; got {type(sphere).__name__}")
+        for stage, mode in sphere.items():
+            if stage not in SPHERE_STAGES:
+                raise ValueError(f"sphere stages must be among {SPHERE_STAGES}; got {stage!r} "
+                                 "(the other stages use the sphere of the model)")
+            if isinstance(mode, bool) or mode not in SPHERE_MODES:
+                raise ValueError(f"sphere[{stage!r}] must be one of {SPHERE_MODES}; got {mode!r}")
+            if self.sphere in (2, 3) and mode in (2, 3) and stage != "graph" and not stages[stage].static:
+                raise ValueError(f"with sphere={self.sphere}, sphere[{stage!r}]={mode} needs a static {stage} "
+                                 "(it is computed once, before the iterations)")
+        return dict(sphere)
+
+    def _support_pull(self, support, x, density, stability, h, iteration, n_iters, memory, bias_fn, step_fn):
+        """The bias of the support on the points and the moved support, as ``(bias, support, memory)``."""
+        n = x.shape[0]
+        diff = support.unsqueeze(1) - x.unsqueeze(0)                          # (s, n, d), from each point to each support point
+        bias, memory = support_vectors(
+            bias_fn, diff, density, stability, h, self.learning_rate, iteration, n_iters, memory, n, "the bias function")
+        if not step_fn.static:
+            step, memory = support_vectors(
+                step_fn, diff, density, stability, h, self.learning_rate, iteration, n_iters, memory,
+                support.shape[0], "the support step function")
+            support = support + step
+            if self.sphere:
+                support = unit(support)
+        return bias, support, memory
+
     @torch.no_grad()
     def forward(self, X, labels=None, support=None, dist="euclidean", density_fn=None, score_fn=None, weight_fn=None,
-                stability_fn=None, metric_fn=None, bias_fn=None, step_fn=None):
+                stability_fn=None, metric_fn=None, bias_fn=None, step_fn=None, sphere=None):
         """Run HyperMSDE and return ``(shifted, metric, trajectory)``.
+
+        Every ``*_fn`` is an instance of ``Component`` (a class with a ``static`` flag, see ``Component``).
 
         Parameters
         ----------
@@ -771,29 +891,30 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         dist : {``"euclidean"``, ``"cosine"``}
             Distance used for the fuzzy graph, neighbour selection, ``h="auto"``, and ``score_fn``/``weight_fn``.
             With ``sphere`` 1, 2 or 3 the points always stay on the unit sphere.
-        density_fn : optional callable
-            Replaces the density (see ``Density``, and ``Original`` in ``src/density.py``). It is called at the start of every iteration, before
-            neighbour selection, unless it has a true ``static`` attribute: then it is called once, at the first
-            iteration, and the weights are not re-evaluated every iteration because of it. Without one, ``Density``
-            (adaptive angular k-NN, static) is used. The final density is ``density_``.
-        score_fn : optional callable
+        density_fn : optional Component
+            Replaces the density (see ``Density``, and ``Original`` in ``src/density.py``). It is called at the start
+            of every iteration, before neighbour selection, unless it is static: then it is called once, at the first
+            iteration. Without one, ``Density`` (adaptive angular k-NN, not static) is used. The final density is
+            ``density_``.
+        score_fn : optional Component
             Replaces the selection score (see ``Score``). It is called at every neighbour selection,
             including the initial one.
-        weight_fn : optional callable
-            Replaces the weights used for the weighted mean (see ``Weight``). A supplied function is
-            evaluated at the start of every iteration using current neighbour distances and stability scores.
-        stability_fn : optional callable
-            Updates the (n,) stability scores after each iteration. It is called as
+        weight_fn : optional Component
+            Replaces the weights used for the weighted mean (see ``Weight``). The weights are prepared whenever
+            neighbours are selected and, unless the weight is static, at every other iteration too (from the current
+            neighbour distances, densities and stability scores).
+        stability_fn : optional Component
+            Updates the (n,) stability scores after each iteration (skipped when static). It is called as
             ``stability_fn(moved, x, density, stability, h, iteration, n_iters, graph, memory)``. ``moved`` and
             ``x`` are the new and previous (n, d) unit-norm positions; ``stability`` contains the scores before
             this update. Return ``(scores, memory)`` where scores are finite and in [0, 1]. Scores start at 1.0;
             updated scores affect the next iteration's weights and later neighbour selections. The final scores
             are available as ``stability_``.
-        metric_fn : optional callable
+        metric_fn : optional Component
             Computes a metric after each iteration. It receives the same arguments as ``stability_fn`` and
             returns ``(metric, memory)``; the values of all the iterations are summed and returned as the second
             item. Without one, ``Metric`` is used: the distance each point moved.
-        bias_fn : optional callable
+        bias_fn : optional Component
             The pull of the support on the points; without one, ``Bias`` (a step of ``learning_rate`` towards the
             mean of the support points) is used. It is called every iteration as
             ``bias_fn(dist, density, stability, h, learning_rate, iteration, n_iters, memory)``, where ``dist`` is
@@ -801,10 +922,16 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             ``density`` and ``stability`` are (n,) and ``h`` the kernel width in use. It returns a finite (n, d)
             bias, added to every point's step outside the learning rate:
             ``x + learning_rate * (mean - x) + bias``.
-        step_fn : optional callable
+        step_fn : optional Component
             Moves the support points, with the same arguments as ``bias_fn`` (evaluated at the same positions,
-            before the step). It returns a finite (s, d) step added to the support. Without one the support stays
-            where it is. Requires ``support``.
+            before the step). It returns a finite (s, d) step added to the support. Without one (``Step``, static)
+            the support stays where it is. Requires ``support``.
+        sphere : optional dict ``{stage: mode}``
+            The space (0 raw, 1 unit, 2 mean-subtracted, 3 Fréchet-centred, see the ``sphere`` of the model) in
+            which a stage sees the points. ``stage`` is ``"graph"``, ``"density"``, ``"score"`` or ``"weight"``;
+            the other stages use the sphere of the model. The raw ``X`` is mapped once, before the iterations,
+            and that copy stays frozen for the whole run. A stage that is not in the dict sees the current points.
+            With the sphere of the model 2 or 3, a stage set to 2 or 3 must be static (``"graph"`` always is).
 
         Returns
         -------
@@ -820,116 +947,98 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         updated dict with its result as ``(result, memory)``. A new run starts with an empty dict; the final dict
         is available as ``memory_``.
         """
-        X = torch.as_tensor(X)
-        if X.dim() != 2 or not X.is_floating_point():
-            raise ValueError(f"X must be a 2D floating-point tensor; got shape {tuple(X.shape)}, dtype {X.dtype}")
-        X = X.detach().to(self.device_name)
+        X = self._check_input(X, dist)
         n = X.shape[0]
-        if dist not in METRICS:
-            raise ValueError(f"dist must be one of {METRICS}; got {dist!r}")
-        if not 1 <= self.k <= n - 1 or not 1 <= self.n_neighbors <= n:
-            raise ValueError(f"k={self.k} and n_neighbors={self.n_neighbors} need k <= n-1 and n_neighbors <= n "
-                             f"for n={n} points")
-
         if support is None and (bias_fn is not None or step_fn is not None):
             raise ValueError("bias_fn and step_fn need support points")
-        if support is not None and bias_fn is None:
-            bias_fn = self.bias
-
-        stability = torch.ones(n, dtype=X.dtype, device=X.device)           # every point starts fully stable
-        memory = {}                                                          # shared by all the callables: empty at the start
         labels = self._labels(labels, n)
         support = self._support(support, X.shape[1], X.dtype)
-        score_fn = score_fn if score_fn is not None else self.score
-        density_fn = density_fn if density_fn is not None else self.density
-        stability_fn = stability_fn if stability_fn is not None else self.stability
-        step_fn = step_fn if step_fn is not None else self.step
-        static_density = bool(getattr(density_fn, "static", False))          # depends on the initial points only
-        static_stability = bool(getattr(stability_fn, "static", False))      # never changes the scores
-        static_step = bool(getattr(step_fn, "static", False))                # never moves the support
-        weights_every_iteration = weight_fn is not None or not static_stability or not static_density
-        weight_fn = weight_fn if weight_fn is not None else self.weight
+        density_fn = _resolve(density_fn, self.density, "density_fn")
+        score_fn = _resolve(score_fn, self.score, "score_fn")
+        weight_fn = _resolve(weight_fn, self.weight, "weight_fn")
+        stability_fn = _resolve(stability_fn, self.stability, "stability_fn")
+        metric_fn = _resolve(metric_fn, self.metric, "metric_fn")
+        bias_fn = _resolve(bias_fn, self.bias, "bias_fn")
+        step_fn = _resolve(step_fn, self.step, "step_fn")
+        spaces = self._check_sphere(sphere, {"density": density_fn, "score": score_fn, "weight": weight_fn})
         n_iters = self.max_iters_shift
 
-        x = unit(X) if self.sphere else X                                    # on the sphere from the start (sphere 1, 2, 3)
-        self.center_ = None
-        if self.sphere == 2:
-            self.center_ = x.mean(0)                                         # Euclidean mean of the unit-norm points
-            x = unit(x - self.center_)                                       # mean-subtracted, back on the sphere
-        elif self.sphere == 3:
-            x, self.center_ = spherical_center(x)                            # Fréchet-mean centred, still on the sphere
-        if support is not None and self.sphere:
-            support = unit(support)                                          # the same space as the points
-            if self.sphere == 2:
-                support = unit(support - self.center_)
-            elif self.sphere == 3:
-                support = unit(_log_map(self.center_.unsqueeze(0), support))
-        graph = _similarity_graph(x, self.n_neighbors, self.n_epochs, self.chunk_size, dist)
-        density = torch.ones(n, dtype=x.dtype, device=x.device)             # replaced at the start of the iterations
+        # 1. Normalise: the loop state, and the frozen copies of the stages that have a space of their own.
+        x, self.center_ = _normalise(X, self.sphere)
+        frozen = {self.sphere: x}                                            # the raw points in each mode used, made once
 
-        metric_fn = metric_fn if metric_fn is not None else self.metric
+        def points(stage):
+            """The points ``stage`` works on: its frozen copy, or the current ones."""
+            mode = spaces.get(stage)
+            if mode is None:
+                return x
+            if mode not in frozen:
+                frozen[mode] = _normalise(X, mode)[0]
+            return frozen[mode]
+
+        if support is not None:
+            support = _map_like(support, self.sphere, self.center_)          # the same space as the points
+        graph = _similarity_graph(points("graph"), self.n_neighbors, self.n_epochs, self.chunk_size, dist)
+
+        stability = torch.ones(n, dtype=X.dtype, device=X.device)           # every point starts fully stable
+        density = torch.ones(n, dtype=X.dtype, device=X.device)             # replaced at the start of the iterations
+        memory = {}                                                          # shared by all the callables: empty at the start
         metric = None
         trajectory = [x.clone()] if self.keep_trajectory else []
         indices, nbr_dist, valid, orphan, h, graph_pairs = None, None, None, None, None, None
         w, W, unweighted = None, None, None                                  # the neighbour weights of the current step
         for iteration in range(n_iters):
-            if iteration == 0 or not static_density:
+            # 2. Density
+            if iteration == 0 or not density_fn.static:
                 density, memory = _call_with_memory(
-                    density_fn, (x, density, stability, iteration, n_iters, graph), memory, "the density function")
+                    density_fn, (points("density"), density, stability, iteration, n_iters, graph), memory,
+                    "the density function")
                 if density.shape != (n,) or not bool(torch.isfinite(density).all()) or bool((density < 0).any()):
                     raise ValueError(f"the density must be a finite non-negative tensor of shape ({n},); "
                                      f"got shape {tuple(density.shape)}")
                 density = density.to(x.dtype)
-            selected = iteration == 0 or bool(self.recompute_neighbors and iteration % self.recompute_neighbors == 0)
+            # 3. Select neighbours
+            selected = iteration == 0 or bool(
+                self.recompute_neighbors and not score_fn.static and iteration % self.recompute_neighbors == 0)
             if selected:
                 indices, nbr_dist, valid, orphan, h, memory = select_neighbors(
-                    x, density, stability, self.k, self.h, score_fn, graph,
+                    points("score"), density, stability, self.k, self.h, score_fn, graph,
                     labels=labels, chunk_size=self.chunk_size,
                     iteration=iteration, n_iters=n_iters, memory=memory, metric=dist,
                 )
                 graph_pairs = graph_values_at(graph, indices).to(x.dtype)     # fuzzy-graph weight of every selected pair
-            elif weights_every_iteration:
-                nbr_dist = neighbor_distances(x, indices, self.chunk_size, dist)   # distances at the current positions
-            if selected or weights_every_iteration:
+            # 4. Weights
+            if (selected and ("score" in spaces or "weight" in spaces)) or (not selected and not weight_fn.static):
+                nbr_dist = neighbor_distances(points("weight"), indices, self.chunk_size, dist)
+            if selected or not weight_fn.static:
                 indices, w, W, memory = prepare_weights(
                     indices, nbr_dist, density, stability, h, weight_fn, valid, n, iteration, n_iters, graph_pairs, memory)
                 unweighted = w.sum(dim=1) == 0                               # no weight at all: the point stays put
 
+            # 5. Step
             mean = torch.where(unweighted.unsqueeze(1), x, weighted_mean(x, indices, w, W, chunk_size=self.chunk_size))
             moved = x + self.learning_rate * (mean - x)
             if support is not None:
-                diff = support.unsqueeze(1) - x.unsqueeze(0)                  # (s, n, d), from each point to each support point
-                bias, memory = support_vectors(
-                    bias_fn, diff, density, stability, h, self.learning_rate, iteration, n_iters, memory, n,
-                    "the bias function")
+                bias, support, memory = self._support_pull(
+                    support, x, density, stability, h, iteration, n_iters, memory, bias_fn, step_fn)
                 moved = moved + bias                                          # outside the learning rate
-                if not static_step:
-                    support_step, memory = support_vectors(
-                        step_fn, diff, density, stability, h, self.learning_rate, iteration, n_iters, memory,
-                        support.shape[0], "the support step function")
-                    support = support + support_step
-                    if self.sphere:
-                        support = unit(support)
-                del diff
             if self.sphere:
                 moved = unit(moved)                                           # back onto the sphere
             if orphan is not None and support is None:
                 moved = torch.where(orphan.unsqueeze(1), x, moved)            # with support, orphans still get the bias
-            previous = x
-            step = moved - previous                                           # this iteration's step vectors
-            change = step.norm(dim=1)
-
-            stability_before = stability
-            x = moved
+            previous, x = x, moved
             if self.keep_trajectory:
                 trajectory.append(x.clone())
-            mean_change = change.mean().item()
+            mean_change = (x - previous).norm(dim=1).mean().item()
             logger.debug("iteration %d: mean movement %.6f", iteration + 1, mean_change)
-            if not static_stability:
+
+            # 6. After the iteration: stability, metric
+            stability_before = stability
+            if not stability_fn.static:
                 stability, memory = update_stability(
-                    stability_fn, moved, previous, density, stability_before, h, iteration, n_iters, graph, memory)
+                    stability_fn, x, previous, density, stability_before, h, iteration, n_iters, graph, memory)
             metric_step, memory = _call_with_memory(
-                metric_fn, (moved, previous, density, stability_before, h, iteration, n_iters, graph), memory,
+                metric_fn, (x, previous, density, stability_before, h, iteration, n_iters, graph), memory,
                 "the metric function")
             metric = metric_step if metric is None else metric + metric_step
             if mean_change < self.shift_threshold:

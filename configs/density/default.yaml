@@ -1,4 +1,4 @@
-# Adaptive angular k-NN density on the hypersphere (src.hypermsde.Density; computed once from the initial points).
+# Adaptive angular k-NN density on the hypersphere (src.hypermsde.Density; re-estimated on the current points every iteration, add `static: true` to compute it once).
 name: default
 fn:
   _target_: src.hypermsde.Density

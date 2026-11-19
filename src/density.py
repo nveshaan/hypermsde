@@ -3,12 +3,11 @@
 The default density, ``Density`` (adaptive angular k-NN), is in ``hypermsde.py``. ``Original`` here is the density of
 the HyperMSDE paper (arXiv:2602.03293), counted in the space of the rows of the fuzzy neighbour graph. It has the
 signature ``density(x, density, stability, iteration, n_iters, graph, memory) -> (density, memory)`` and depends on
-the initial points only, so it is marked ``static``: ``forward`` evaluates it once, at the first iteration, and does
-not re-evaluate the weights because of it.
+the initial points only, so it is ``static``: ``forward`` evaluates it once, at the first iteration.
 """
 import torch
 
-from .hypermsde import DEFAULT_CHUNK_SIZE, _graph_layout, _similarity_graph
+from .hypermsde import DEFAULT_CHUNK_SIZE, Component, _graph_layout, _similarity_graph
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -129,8 +128,8 @@ def density_weights(X, nbd_sample_count_threshold=70, n_neighbors=15, n_epochs=2
     return (density, S) if return_graph else density
 
 
-class Original:
-    """The density of the HyperMSDE paper (arXiv:2602.03293), as a ``density_fn`` (see ``graph_density``).
+class Original(Component):
+    """The density of the HyperMSDE paper (arXiv:2602.03293), as a density component (see ``graph_density``).
 
     The rows of the fuzzy ``graph`` are compared as sparse vectors. The radius is the smallest one at which at
     least ``satisfiability_proportion`` of the points have more than ``nbd_sample_count_threshold`` others inside
@@ -141,7 +140,8 @@ class Original:
     static = True
 
     def __init__(self, nbd_sample_count_threshold=70, max_iters_weight_count=4, satisfiability_proportion=0.3,
-                 chunk_size=DEFAULT_CHUNK_SIZE):
+                 chunk_size=DEFAULT_CHUNK_SIZE, static=None):
+        super().__init__(static)
         self.nbd_sample_count_threshold = nbd_sample_count_threshold
         self.max_iters_weight_count = max_iters_weight_count
         self.satisfiability_proportion = satisfiability_proportion
