@@ -164,6 +164,20 @@ class UniVAD:
         samples = torch.stack([self.transform(image) for image in images]).to(self.device)
         with contextlib.chdir(self.repo), cuda_alias(self.device):
             self.model.setup({"few_shot_samples": samples, "dataset_category": self.category, "image_path": paths})
+        self._concatenate_leftovers()
+
+    def _concatenate_leftovers(self) -> None:
+        """UniVAD.setup concatenates each part's support features only for the part indices of the last support
+        image, so a part seen only in earlier images stays a list of per-image tensors and breaks scoring. Finish
+        that concatenation (an empty list means the part never occurred and is kept, as the scorer skips it)."""
+        model = self.model
+        for idx, feats in enumerate(model.normal_dino_part_patch_features):
+            if isinstance(feats, list) and feats:
+                model.normal_dino_part_patch_features[idx] = torch.cat(feats, dim=0)
+        for layer in model.normal_clip_part_patch_features:
+            for idx, feats in enumerate(layer):
+                if isinstance(feats, list) and feats:
+                    layer[idx] = torch.cat(feats, dim=0)
 
     @torch.no_grad()
     def score(self, images) -> np.ndarray:
