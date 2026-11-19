@@ -19,7 +19,7 @@ shifted, movement, trajectory = model(X)
 `forward` runs these stages in order.
 
 1. **Normalise** (`sphere`). With `sphere=0` nothing is normalised and the whole loop runs in the raw feature space. With 1 the input is scaled to unit length, with 2 it is also mean-subtracted and normalised again, and with 3 it is also centred on its Fréchet mean. In all three, points are re-normalised immediately after every shift, so every state the loop passes through, every trajectory entry and the output are unit-norm. (A zero vector has no direction: it is pulled along by its neighbours and is unit-norm after the first shift.)
-2. **Density** of every point. By default it is the adaptive angular k-NN estimate `Density` (see [The densities](#the-densities)), which is **not static**: it is re-estimated on the current points at the start of every iteration. A static density (`Density(static=True)`, or `Original`) is computed once, at the first iteration. The UMAP fuzzy graph of the initial points is built in any case, kept, and handed to the density, score, weight and stability components. A `density_fn` replaces the default (see [Replacing the density, ...](#replacing-the-density-the-selection-score-the-neighbour-weights-and-the-stability-update)).
+2. **Density** of every point. By default it is the adaptive angular k-NN estimate `Density`, which is **not static**: it is re-estimated on the current points at the start of every iteration. A static density (`Density(static=True)`, or `Original`) is computed once, at the first iteration. The UMAP fuzzy graph of the initial points is built in any case, kept, and handed to the density, score, weight and stability components. A `density_fn` replaces the default (see [Replacing the density, ...](#replacing-the-density-the-selection-score-the-neighbour-weights-and-the-stability-update)).
 3. **Select neighbours.** In the geometry chosen by `dist` (Euclidean or cosine) of the current points, every other point is scored by `Score` and the `k` best are kept: with the default score `density^a * stability^b * exp(-c * d^2 / (2 h^2))`, so a dense, stable point can outrank a closer, sparse one. All points are candidates (no distance pre-filter) and a point is never its own neighbour. Candidates with a positive score rank by score; if fewer than `k` have one, the remaining slots go to the nearest candidates.
 4. **Weights.** Each selected neighbour gets a weight from `Weight` (default `density^a * stability^b`); weights of picks that violate the label mask are zeroed and rows are normalised to sum to 1. A point whose weights are all zero stays where it is. The weights are always computed when neighbours are selected. If the weight is **not static** (the default `Weight` is not) they are also computed at the start of every other iteration, with the current distances to the selected neighbours and the current density and stability; a static weight (`Weight(static=True)`) is computed only when neighbours are selected, so it only makes sense with a static density and stability.
 5. **Step.** `mean = W @ X` with `W` a sparse `(n, n)` matrix holding the `n*k` normalised weights (one sparse matmul), then `x' = x + learning_rate * (mean - x)`, plus `bias` from `bias_fn` when `support` is given, normalised back onto the sphere unless `sphere=0`.
@@ -64,7 +64,42 @@ A strength is a number `>= 0`; 0 switches that factor off and larger values weig
 | `metric_fn` | Optional component evaluated after every iteration. Its per-iteration values are summed and returned. Without one, `Metric` is used: the `(n,)` summed movement (`Original` of [`src/metric.py`](src/metric.py) does the same). |
 | `bias_fn` | The pull of the support on the points. Without one, `Bias` is used: a step of `learning_rate` towards the mean of the support points. Called every iteration; its `(n, d)` result is added to every point's step, outside the learning rate. |
 | `step_fn` | Optional step of the support points, called every iteration with the same arguments as `bias_fn`. Without one, `Step` is used, which does nothing: the support stays where it is. Needs `support`. |
-| `sphere` | Optional dict `{stage: mode}` giving a stage its own space. `stage` is `"graph"` (the fuzzy graph), `"density"`, `"score"` (the distances of the neighbour selection and `h="auto"`) or `"weight"` (the live neighbour distances); `mode` is 0 (raw), 1 (unit), 2 (mean-subtracted, unit) or 3 (Fréchet-centred), as for the model's `sphere`. The raw `X` is mapped **once**, before the iterations, and that copy stays frozen for the whole run, so such a stage ignores the moving points. A stage that is not in the dict sees the current points, in the space of the model's `sphere`. The other stages (weighted mean, bias, step, stability, metric) always use the space of the model, and any other key raises a `ValueError`. With the model's `sphere` 0 or 1 nothing else is checked; with 2 or 3, a stage set to 2 or 3 needs a **static** component (`"graph"` always qualifies), else a `ValueError`. |
+| `sphere` | Optional dict `{stage: mode}` giving a stage its own space. `stage` is `"graph"` (the fuzzy graph), `"density"`, `"score"` (the distances of the neighbour selection and `h="auto"`) or `"weight"` (the live neighbour distances); `mode` is 0 (raw), 1 (unit), 2 (mean-subtracted, unit) or 3 (Fréchet-centred), as for the model's `sphere`. A stage that is not in the dict sees the current points, in the space of the model's `sphere`. With the model's `sphere` 0 or 1, a stage in the dict sees the **current** points mapped with its mode every time it runs (live; mode 0 on a model of `sphere=1` is the points as they are, since the normalisation cannot be undone), and nothing else is checked. With 2 or 3 it sees the raw `X` mapped with its mode, made **once** and fixed for the whole run, and every stage in the dict needs a **static** component (`"graph"` always qualifies), else a `ValueError`. The other stages (weighted mean, bias, step, stability, metric) always use the space of the model, and any other key raises a `ValueError`. |
+
+### The `sphere` argument: what each stage receives
+
+`x` is the loop state, in the space of the model's `sphere` (the init value), and it moves every iteration; `X` is the raw input. Only four stages can be listed in the dict: `graph`, `density`, `score` and `weight`. The table holds for all four (differences below it).
+
+| model `sphere` | `forward` entry | Input to the stage | Must be static? |
+| --- | --- | --- | --- |
+| 0 | none | `x` (raw, live) | no |
+| 0 | 0 | `x` (live) | no |
+| 0 | 1 | `unit(x)`, live | no |
+| 0 | 2 | `unit(unit(x) - mean(unit(x)))`, live | no |
+| 0 | 3 | Fréchet-centred `unit(x)`, live | no |
+| 1 | none | `x` (live) | no |
+| 1 | 0 | `x` (live; unit-norm cannot be undone) | no |
+| 1 | 1 | `x` (live) | no |
+| 1 | 2 | `unit(x - mean(x))`, live | no |
+| 1 | 3 | Fréchet-centred `x`, live | no |
+| 2 or 3 | none | `x` (live; the loop's centred state) | no |
+| 2 or 3 | 0 | `X`, raw, made once and fixed | **yes** |
+| 2 or 3 | 1 | `unit(X)`, made once and fixed | **yes** |
+| 2 or 3 | 2 | `unit(unit(X) - mean)`, made once and fixed | **yes** |
+| 2 or 3 | 3 | Fréchet-centred `unit(X)`, made once and fixed | **yes** |
+
+**A component that is not static**
+
+- With the model's `sphere` 2 or 3 and an entry for it: `forward` raises a `ValueError` before any computation, telling you to pass `static=True`.
+- With the model's `sphere` 2 or 3 and no entry: nothing is checked, the stage follows `x`.
+- With the model's `sphere` 0 or 1, for any entry: nothing is checked and the run proceeds normally. The component is called as often as its flag says (density every iteration, score at each selection, weight every iteration), and each call remaps the current `x`. A static one is called once, at the first iteration, so it effectively sees the initial points.
+
+**Exceptions and notes**
+
+- `graph` is never checked, because it is built once, before the loop. With the model's `sphere` 0 or 1 its input is the initial `x` mapped with its mode (so mode 0 on `sphere=1` is `unit(X)`, not the raw `X`); with 2 or 3 it is the raw `X` mapped with its mode; with no entry it is the initial `x`.
+- `score`: the input is used for the distances that rank the candidates and for `h="auto"`. `weight`: it is used for the live neighbour distances, which are also recomputed from this stage's points at each selection when `score` or `weight` is listed. `density`: it is passed as the `x` argument.
+- The weighted mean, bias, step, stability and metric always receive `x`; a key for any of them raises a `ValueError`.
+- `support` is always mapped into the model's space with the model's centre, whatever the dict says.
 
 ### Replacing the density, selection score, neighbour weights, stability update, returned metric and support functions
 
@@ -135,6 +170,20 @@ step_fn(dist, density, stability, h, learning_rate, iteration, n_iters, memory)
 | `bias_fn` | every iteration, after the weights, before the step | the iteration whose step will use the bias |
 | `step_fn` | every iteration, right after `bias_fn` | the iteration whose step it is |
 
+**Returning `None` (skipping a call).** Any component may return `(None, memory)`, e.g. depending on `iteration` and `n_iters`, to skip that call:
+
+| component | `None` means |
+| --- | --- |
+| `density_fn` | the previous density stays |
+| `score_fn` | the selection is skipped and the current neighbours stay (a `None` from any `chunk_size` block abandons the whole selection) |
+| `weight_fn` | the previous weights stay |
+| `stability_fn` | the scores stay as they are |
+| `metric_fn` | nothing is added to the sum (if it is `None` in every iteration, the returned metric is zeros) |
+| `bias_fn` | no bias (zeros) |
+| `step_fn` | the support does not move (zeros) |
+
+Density, score and weight have nothing to keep on the first call, so `None` there raises a `ValueError`. So does a weight that returns `None` in an iteration where neighbours were just (re)selected, because the previous weights belong to the old neighbours; with a score that reselects every `recompute_neighbors` iterations, a weight can only skip the other iterations.
+
 **The fuzzy graph.** The graph is a UMAP-style fuzzy `n_neighbors`-nearest-neighbour graph of the initial points: every point has a per-point scale, an edge to each of its `n_neighbors` nearest points, the two directions of a pair are combined by fuzzy union, and edges weaker than `max / n_epochs` are dropped. Weights are in `(0, 1]`. There is one entry per directed nearest-neighbour edge (about `n_neighbors` per point), so the matrix is **not** symmetric: on 3,240 ARMD OCT embeddings (CLIP) about 58% of the edges also exist in the reverse direction. It is computed **once**, before the first iteration, and is the same for the whole run. Each function gets the view that fits its other arguments: the `(chunk, n)` dense rows aligned with `dist` for `score_fn` (0 where there is no edge), the `(n, k)` values for the selected `(point, neighbour)` pairs for `weight_fn` (0 where a selected neighbour is not a graph neighbour; this differs from the graph neighbours because selection also looks at density), and the whole `(n, n)` coalesced sparse tensor for `density_fn`, `stability_fn` and `metric_fn`.
 
 Within an iteration the order is: density update → select neighbours (if due) → weights → support bias and step → step → stability update → metric update. A component with an older signature (without `iteration`, `n_iters`, `graph` or the memory) raises a `TypeError`. `dist` is the distance chosen by the `dist` argument of `forward`; for `weight_fn` it is recomputed from the current positions at every iteration it is prepared. Shape or value violations raise `ValueError`. Examples:
@@ -200,11 +249,11 @@ class MovesLikeNeighbours(Component):
         return scores, memory
 shifted, _, _ = model(X, stability_fn=MovesLikeNeighbours())
 
-# the density and the neighbour selection in their own frozen spaces, whatever the loop does
-shifted, _, _ = model(X, sphere={"density": 3, "score": 1})
+# the density in the Fréchet-centred space and the neighbour selection in the mean-subtracted space, of the current points (model sphere 1)
+shifted, _, _ = model(X, sphere={"density": 3, "score": 2})
 ```
 
-The `sphere` dict only changes the space of the stages it names; with the model's own `sphere` 2 or 3, `sphere={"density": 3}` needs `density_fn=Density(static=True)`.
+The `sphere` dict only changes the space of the stages it names; with the model's own `sphere` 2 or 3, every component it names must be static: `sphere={"density": 3}` needs `density_fn=Density(static=True)`.
 
 With `recompute_neighbors=0` the neighbour graph is fixed after the first selection, so a `score_fn` is called once; the weights, the density and the stability keep following the moving points as long as `weight_fn` and `density_fn` are not static.
 

@@ -116,7 +116,8 @@ def _call_with_memory(fn, args, memory, name):
     """``fn(*args, memory)`` for any of the replaceable callables; returns ``(output, memory)``.
 
     The callable gets the shared memory dict after its regular arguments and must return
-    ``(output, memory)``, the dict being the updated memory."""
+    ``(output, memory)``, the dict being the updated memory. ``output`` may be ``None``: the caller then skips
+    that call (see the ``None`` paragraph of ``Component``)."""
     result = fn(*args, memory)
     if not isinstance(result, tuple) or len(result) != 2 or not isinstance(result[1], dict):
         raise ValueError(f"{name} must return (output, memory) with the memory as a dict")
@@ -134,6 +135,12 @@ class Component:
     - stability, step: ``True`` means it never changes anything, so ``forward`` does not call it.
     - score: ``True`` selects neighbours only once, at the first iteration, whatever ``recompute_neighbors`` says.
     - metric, bias: informational (always called when due).
+
+    Any component may return ``(None, memory)`` to skip that call (e.g. depending on ``iteration`` and ``n_iters``):
+    density keeps the previous density, score keeps the current neighbours (no reselection), weight keeps the previous
+    weights, stability keeps the scores, metric adds nothing, bias is zero and step moves nothing. Density, score and
+    weight have nothing to keep on the first call, and a weight has nothing consistent to keep right after neighbours
+    were selected: ``None`` there raises a ``ValueError``.
 
     Subclasses implement ``__call__`` with the signature documented on their own class.
     """
@@ -472,7 +479,8 @@ def select_neighbors(X, density, stability, k, h, score_fn, graph,
     Returns ``(indices (n, k), dist (n, k), valid (n, k) bool or None, orphan (n,) bool or None, h, memory)``
     where ``valid`` marks picks that respect the label mask, ``orphan`` marks points with no valid pick at all,
     ``dist`` the distances to the picks, ``h`` the kernel width used (``"auto"`` resolves to the median distance
-    to the ``k`` nearest neighbours) and ``memory`` is the updated dict.
+    to the ``k`` nearest neighbours) and ``memory`` is the updated dict. If ``score_fn`` returns ``None`` for any
+    block, the selection is abandoned and the result is ``(None, None, None, None, h, memory)``.
     """
     n = X.shape[0]
     memory = {} if memory is None else memory
@@ -490,6 +498,8 @@ def select_neighbors(X, density, stability, k, h, score_fn, graph,
         score, memory = _call_with_memory(
             score_fn, (d, density, stability, h, iteration, n_iters, _graph_rows(layout, start, end, n, X.dtype, X.device)),
             memory, "the selection score function")
+        if score is None:
+            return None, None, None, None, h, memory
         if score.shape != d.shape or not bool(torch.isfinite(score).all()):
             raise ValueError("the selection score must be finite and have the shape of the distance block "
                              f"{tuple(d.shape)}; got {tuple(score.shape)}")
@@ -562,7 +572,8 @@ class Weight(Component):
 @torch.no_grad()
 def prepare_weights(indices, dist, density, stability, h, weight_fn, valid, n, iteration, n_iters, graph, memory):
     """Normalised (n, k) neighbour weights, where the device supports it the sparse (n, n) weight matrix, and the
-    updated shared ``memory`` dict, as ``(indices, w, W, memory)``.
+    updated shared ``memory`` dict, as ``(indices, w, W, memory)`` (``w`` and ``W`` are ``None`` if ``weight_fn``
+    returned ``None``).
 
     ``weight_fn`` is evaluated here with the (n, k) tensors of the selected neighbours; ``graph`` is the (n, k)
     fuzzy-graph weights of the selected pairs (see ``graph_values_at``). The label-validity mask
@@ -572,6 +583,8 @@ def prepare_weights(indices, dist, density, stability, h, weight_fn, valid, n, i
     w, memory = _call_with_memory(
         weight_fn, (dist, density[indices], stability[indices], h, iteration, n_iters, graph), memory,
         "the neighbour weight function")
+    if w is None:
+        return indices, None, None, memory
     if w.shape != indices.shape or not bool(torch.isfinite(w).all()) or bool((w < 0).any()):
         raise ValueError("the neighbour weights must be finite, non-negative and have shape "
                          f"{tuple(indices.shape)}; got {tuple(w.shape)}")
@@ -644,6 +657,8 @@ def support_vectors(fn, diff, density, stability, h, learning_rate, iteration, n
     points and the n points, ``density`` and ``stability`` are (n,) per point, ``h`` the kernel width in use."""
     out, memory = _call_with_memory(fn, (diff, density, stability, h, learning_rate, iteration, n_iters), memory, name)
     shape = (rows, diff.shape[2])
+    if out is None:                                                          # skipped: no bias / no step
+        return torch.zeros(shape, dtype=diff.dtype, device=diff.device), memory
     if not isinstance(out, torch.Tensor) or tuple(out.shape) != shape or not bool(torch.isfinite(out).all()):
         raise ValueError(f"{name} must return a finite tensor of shape {shape}; "
                          f"got {tuple(getattr(out, 'shape', ()))}")
@@ -677,6 +692,8 @@ def update_stability(stability_fn, moved, x, density, stability, h, iteration, n
     """
     new, memory = _call_with_memory(
         stability_fn, (moved, x, density, stability, h, iteration, n_iters, graph), memory, "the stability function")
+    if new is None:                                                          # skipped: the scores stay
+        return stability, memory
     if not isinstance(new, torch.Tensor) or new.shape != stability.shape:
         raise ValueError(f"the stability scores must be a tensor of shape {tuple(stability.shape)}; "
                          f"got {tuple(getattr(new, 'shape', ()))}")
@@ -837,8 +854,9 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
     def _check_sphere(self, sphere, stages):
         """The per-stage ``sphere`` dict of ``forward`` as a plain dict (``{}`` for ``None``), validated.
 
-        ``stages`` maps the stage names that may be set to their components. With the init ``sphere`` 2 or 3, a
-        stage set to 2 or 3 has to be static: it is computed once, from the centre of the initial points."""
+        ``stages`` maps the stage names that may be set to their components. With the init ``sphere`` 2 or 3 every
+        stage in the dict has to be static (``"graph"`` is built once anyway): it is evaluated once, from the centre of
+        the initial points. With 0 or 1 nothing is checked."""
         if sphere is None:
             return {}
         if not isinstance(sphere, dict):
@@ -849,9 +867,9 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
                                  "(the other stages use the sphere of the model)")
             if isinstance(mode, bool) or mode not in SPHERE_MODES:
                 raise ValueError(f"sphere[{stage!r}] must be one of {SPHERE_MODES}; got {mode!r}")
-            if self.sphere in (2, 3) and mode in (2, 3) and stage != "graph" and not stages[stage].static:
-                raise ValueError(f"with sphere={self.sphere}, sphere[{stage!r}]={mode} needs a static {stage} "
-                                 "(it is computed once, before the iterations)")
+            if self.sphere in (2, 3) and stage != "graph" and not stages[stage].static:
+                raise ValueError(f"with sphere={self.sphere}, sphere[{stage!r}] needs a static {stage} component "
+                                 "(pass static=True): it is evaluated once, before the iterations")
         return dict(sphere)
 
     def _support_pull(self, support, x, density, stability, h, iteration, n_iters, memory, bias_fn, step_fn):
@@ -929,9 +947,12 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         sphere : optional dict ``{stage: mode}``
             The space (0 raw, 1 unit, 2 mean-subtracted, 3 Fréchet-centred, see the ``sphere`` of the model) in
             which a stage sees the points. ``stage`` is ``"graph"``, ``"density"``, ``"score"`` or ``"weight"``;
-            the other stages use the sphere of the model. The raw ``X`` is mapped once, before the iterations,
-            and that copy stays frozen for the whole run. A stage that is not in the dict sees the current points.
-            With the sphere of the model 2 or 3, a stage set to 2 or 3 must be static (``"graph"`` always is).
+            the other stages use the sphere of the model. A stage that is not in the dict sees the current points.
+            With the sphere of the model 0 or 1, a stage in the dict sees the current points mapped with its mode
+            every time it runs (live; mode 0 on a model of sphere 1 is the points as they are, since the
+            normalisation cannot be undone), and nothing is checked. With 2 or 3 it sees the raw ``X`` mapped with
+            its mode, made once and fixed for the whole run, and every stage in the dict needs a static component
+            (``"graph"`` always is), else a ``ValueError``.
 
         Returns
         -------
@@ -945,7 +966,8 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
 
         Every callable above receives the same mutable ``memory`` dict as its final argument and returns the
         updated dict with its result as ``(result, memory)``. A new run starts with an empty dict; the final dict
-        is available as ``memory_``.
+        is available as ``memory_``. ``result`` may be ``None`` to skip that call (see ``Component``): the previous
+        density, neighbours, weights or stability scores stay, the metric adds nothing, and the bias and the step are zero.
         """
         X = self._check_input(X, dist)
         n = X.shape[0]
@@ -963,15 +985,19 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         spaces = self._check_sphere(sphere, {"density": density_fn, "score": score_fn, "weight": weight_fn})
         n_iters = self.max_iters_shift
 
-        # 1. Normalise: the loop state, and the frozen copies of the stages that have a space of their own.
+        # 1. Normalise: the loop state, and the spaces of the stages that have one of their own.
         x, self.center_ = _normalise(X, self.sphere)
-        frozen = {self.sphere: x}                                            # the raw points in each mode used, made once
+        frozen = {self.sphere: x}                                            # sphere 2, 3: the raw points in each mode, made once
 
         def points(stage):
-            """The points ``stage`` works on: its frozen copy, or the current ones."""
+            """The points ``stage`` works on: the current ones, unless the stage has a mode of its own. Then, with the
+            sphere of the model 0 or 1, the current ones mapped with that mode (live); with 2 or 3, the raw ``X`` mapped
+            with it (once, then fixed)."""
             mode = spaces.get(stage)
-            if mode is None:
+            if mode is None or mode == self.sphere and self.sphere < 2:
                 return x
+            if self.sphere < 2:
+                return _normalise(x, mode)[0]
             if mode not in frozen:
                 frozen[mode] = _normalise(X, mode)[0]
             return frozen[mode]
@@ -990,30 +1016,51 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         for iteration in range(n_iters):
             # 2. Density
             if iteration == 0 or not density_fn.static:
-                density, memory = _call_with_memory(
+                new_density, memory = _call_with_memory(
                     density_fn, (points("density"), density, stability, iteration, n_iters, graph), memory,
                     "the density function")
-                if density.shape != (n,) or not bool(torch.isfinite(density).all()) or bool((density < 0).any()):
-                    raise ValueError(f"the density must be a finite non-negative tensor of shape ({n},); "
-                                     f"got shape {tuple(density.shape)}")
-                density = density.to(x.dtype)
+                if new_density is None:                                      # skipped: the previous density stays
+                    if iteration == 0:
+                        raise ValueError("the density function returned None at the first iteration: nothing to keep")
+                else:
+                    if (new_density.shape != (n,) or not bool(torch.isfinite(new_density).all())
+                            or bool((new_density < 0).any())):
+                        raise ValueError(f"the density must be a finite non-negative tensor of shape ({n},); "
+                                         f"got shape {tuple(new_density.shape)}")
+                    density = new_density.to(x.dtype)
+
             # 3. Select neighbours
             selected = iteration == 0 or bool(
                 self.recompute_neighbors and not score_fn.static and iteration % self.recompute_neighbors == 0)
             if selected:
-                indices, nbr_dist, valid, orphan, h, memory = select_neighbors(
+                picked = select_neighbors(
                     points("score"), density, stability, self.k, self.h, score_fn, graph,
                     labels=labels, chunk_size=self.chunk_size,
                     iteration=iteration, n_iters=n_iters, memory=memory, metric=dist,
                 )
-                graph_pairs = graph_values_at(graph, indices).to(x.dtype)     # fuzzy-graph weight of every selected pair
+                memory = picked[5]
+                if picked[0] is None:                                        # skipped: the current neighbours stay
+                    if indices is None:
+                        raise ValueError("the selection score function returned None at the first selection: "
+                                         "nothing to keep")
+                    selected = False
+                else:
+                    indices, nbr_dist, valid, orphan, h = picked[:5]
+                    graph_pairs = graph_values_at(graph, indices).to(x.dtype)  # fuzzy-graph weight of every selected pair
+
             # 4. Weights
             if (selected and ("score" in spaces or "weight" in spaces)) or (not selected and not weight_fn.static):
                 nbr_dist = neighbor_distances(points("weight"), indices, self.chunk_size, dist)
             if selected or not weight_fn.static:
-                indices, w, W, memory = prepare_weights(
+                _, new_w, new_W, memory = prepare_weights(
                     indices, nbr_dist, density, stability, h, weight_fn, valid, n, iteration, n_iters, graph_pairs, memory)
-                unweighted = w.sum(dim=1) == 0                               # no weight at all: the point stays put
+                if new_w is None:                                            # skipped: the previous weights stay
+                    if selected:
+                        raise ValueError("the neighbour weight function returned None right after neighbours were "
+                                         "selected: there are no weights for them to keep")
+                else:
+                    w, W = new_w, new_W
+                    unweighted = w.sum(dim=1) == 0                           # no weight at all: the point stays put
 
             # 5. Step
             mean = torch.where(unweighted.unsqueeze(1), x, weighted_mean(x, indices, w, W, chunk_size=self.chunk_size))
@@ -1040,11 +1087,14 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             metric_step, memory = _call_with_memory(
                 metric_fn, (x, previous, density, stability_before, h, iteration, n_iters, graph), memory,
                 "the metric function")
-            metric = metric_step if metric is None else metric + metric_step
+            if metric_step is not None:                                      # None: nothing to add
+                metric = metric_step if metric is None else metric + metric_step
             if mean_change < self.shift_threshold:
                 logger.info("converged after %d iterations", iteration + 1)
                 break
 
+        if metric is None:                                                   # the metric was skipped in every iteration
+            metric = torch.zeros(n, dtype=x.dtype, device=x.device)
         self.density_ = density                                              # the final density
         self.stability_ = stability                                          # the final scores (1.0 with the default Stability)
         self.memory_ = memory                                                # the shared memory after the run
