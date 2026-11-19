@@ -46,6 +46,10 @@ def main() -> None:
     proxy = types.SimpleNamespace(**{k: getattr(torch, k) for k in dir(torch) if not k.startswith("__")})
     proxy.device = lambda *_args, **_kwargs: torch.device(device)
     train.torch = proxy
+    if not device.startswith("cuda"):
+        # Their setup_seed demands deterministic algorithms, which MPS lacks for index_put (used in backward): warn.
+        deterministic = torch.use_deterministic_algorithms
+        torch.use_deterministic_algorithms = lambda mode, *, warn_only=False: deterministic(mode, warn_only=True)
 
     sys.argv = ["train.py", "--training_mode", "full_shot", "--dataset", "VisA", "--save_path", str(save_path),
                 *extra]
