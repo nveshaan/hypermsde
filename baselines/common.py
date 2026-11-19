@@ -50,17 +50,21 @@ def redirect_cuda(device: str) -> None:
     """Send the hardcoded `.cuda()` / `.to("cuda")` calls of a vendored repo to `device` when it is not CUDA."""
     if device.startswith("cuda") or getattr(torch.Tensor, "_cuda_redirect", False):
         return
-    to, cuda = torch.Tensor.to, torch.Tensor.cuda
+    to = torch.Tensor.to
+    # MPS has no float64: tensors sent there from a "cuda" call become float32.
+    narrow = (lambda t: t.float() if t.dtype == torch.float64 else t) if device.startswith("mps") else (lambda t: t)
 
     def redirected_to(self, *args, **kwargs):
         if args and isinstance(args[0], (str, torch.device)) and str(args[0]).startswith("cuda"):
             args = (device, *args[1:])
+            self = narrow(self)
         if str(kwargs.get("device", "")).startswith("cuda"):
             kwargs["device"] = device
+            self = narrow(self)
         return to(self, *args, **kwargs)
 
     torch.Tensor.to = redirected_to
-    torch.Tensor.cuda = lambda self, *args, **kwargs: to(self, device)
+    torch.Tensor.cuda = lambda self, *args, **kwargs: to(narrow(self), device)
     torch.Tensor._cuda_redirect = True
 
 
