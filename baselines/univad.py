@@ -85,6 +85,21 @@ def cuda_alias(device: str):
         torch.cuda.is_available, torch.load = available, load
 
 
+class ChunkedFunctional:
+    """torch.nn.functional whose cosine_similarity runs in chunks: the authors' patch-to-reference comparison
+    broadcasts to 2**32 elements, which MPS cannot index."""
+
+    def __getattr__(self, name):
+        return getattr(F, name)
+
+    @staticmethod
+    def cosine_similarity(x1, x2, dim=1, eps=1e-8, chunk=64):
+        if max(x1.shape[0], x2.shape[0]) <= chunk or x1.shape[0] != max(x1.shape[0], x2.shape[0]):
+            return F.cosine_similarity(x1, x2, dim=dim, eps=eps)
+        return torch.cat([F.cosine_similarity(x1[i:i + chunk], x2, dim=dim, eps=eps)
+                          for i in range(0, x1.shape[0], chunk)])
+
+
 class UniVAD:
     requires_support = True
 
@@ -119,6 +134,7 @@ class UniVAD:
             import UniVAD as module
             import models.component_segmentaion as segmentation
             module.dense_crf = unary_only
+            module.F = ChunkedFunctional()
             # Load GroundingDINO and SAM-HQ once instead of on every call of grounding_segmentation.
             segmentation.load_model = functools.cache(segmentation.load_model)
             sam = functools.cache(segmentation.sam_hq_model_registry["vit_h"])
