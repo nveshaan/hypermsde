@@ -172,5 +172,5 @@ class UniVAD:
         with contextlib.chdir(self.repo), cuda_alias(self.device):
             for image, path in zip(images, paths):
                 x = self.transform(image).unsqueeze(0).to(self.device)
-                scores.append(float(self.model(x, path, image)["pred_score"]))
+                scores.append(float(self.model(x, path)["pred_score"]))
         return np.asarray(scores)
