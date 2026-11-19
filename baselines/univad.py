@@ -71,12 +71,18 @@ def cuda_alias(device: str):
     if device.startswith("cuda"):
         yield
         return
-    original = torch.cuda.is_available
-    torch.cuda.is_available = lambda: True
+    available, load = torch.cuda.is_available, torch.load
+
+    def load_to_device(*args, map_location=None, **kwargs):
+        if str(map_location).startswith("cuda"):
+            map_location = device
+        return load(*args, map_location=map_location, **kwargs)
+
+    torch.cuda.is_available, torch.load = (lambda: True), load_to_device
     try:
         yield
     finally:
-        torch.cuda.is_available = original
+        torch.cuda.is_available, torch.load = available, load
 
 
 class UniVAD:
