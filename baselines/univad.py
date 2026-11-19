@@ -38,6 +38,21 @@ def unary_only(image_tensor, output_logits):
     return F.softmax(logits.squeeze(0), dim=0).cpu().numpy()
 
 
+@contextlib.contextmanager
+def cuda_alias(device: str):
+    """The authors' code picks `"cuda" if torch.cuda.is_available() else "cpu"` in places, which on a Mac would put
+    those parts on the CPU next to MPS tensors. Report CUDA as available (redirect_cuda maps it to `device`)."""
+    if device.startswith("cuda"):
+        yield
+        return
+    original = torch.cuda.is_available
+    torch.cuda.is_available = lambda: True
+    try:
+        yield
+    finally:
+        torch.cuda.is_available = original
+
+
 class UniVAD:
     requires_support = True
 
@@ -67,7 +82,7 @@ class UniVAD:
         self.data_dir = repo / "data" / "delta" / modality
         self.data_dir.mkdir(parents=True, exist_ok=True)
         torch.manual_seed(seed)
-        with contextlib.chdir(repo):
+        with contextlib.chdir(repo), cuda_alias(self.device):
             import UniVAD as module
             import models.component_segmentaion as segmentation
             module.dense_crf = unary_only
@@ -91,21 +106,21 @@ class UniVAD:
                 todo.append(path)
             paths.append(path)
         if todo:
-            with contextlib.chdir(self.repo):
+            with contextlib.chdir(self.repo), cuda_alias(self.device):
                 self.segment(todo, "./masks", self.grounding)
         return paths
 
     def fit(self, images) -> None:
         paths = self._paths(images)
         samples = torch.stack([self.transform(image) for image in images]).to(self.device)
-        with contextlib.chdir(self.repo):
+        with contextlib.chdir(self.repo), cuda_alias(self.device):
             self.model.setup({"few_shot_samples": samples, "dataset_category": self.category, "image_path": paths})
 
     @torch.no_grad()
     def score(self, images) -> np.ndarray:
         paths = self._paths(images)
         scores = []
-        with contextlib.chdir(self.repo):
+        with contextlib.chdir(self.repo), cuda_alias(self.device):
             for image, path in zip(images, paths):
                 x = self.transform(image).unsqueeze(0).to(self.device)
                 scores.append(float(self.model(x, path, image)["pred_score"]))
