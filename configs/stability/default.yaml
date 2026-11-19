@@ -1,3 +1,4 @@
-# HyperMSDE's built-in stability (constant 1.0).
+# HyperMSDE's built-in stability: no update, the scores stay at 1.0 (src.hypermsde.Stability).
 name: default
-fn: null
+fn:
+  _target_: src.hypermsde.Stability

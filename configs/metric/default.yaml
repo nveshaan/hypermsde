@@ -1,0 +1,4 @@
+# The distance each point travelled (src.hypermsde.Metric); the same as metric=original for now.
+name: default
+fn:
+  _target_: src.hypermsde.Metric

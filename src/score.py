@@ -1,6 +1,6 @@
 """Neighbour selection scores for HyperMSDE (the ``score_fn`` of ``HypersphericalMeanShiftDensityEnhancement.forward``).
 
-Every score has the signature of ``src.hypermsde.NeighborScore``:
+Every score has the signature of ``src.hypermsde.Score``:
 ``score(dist, density, stability, h, iteration, n_iters, graph, memory) -> (score, memory)``.
 """
 import torch

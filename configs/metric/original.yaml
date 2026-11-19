@@ -1,0 +1,4 @@
+# The HyperMSDE paper's metric (arXiv:2602.03293): the distance each point travelled.
+name: original
+fn:
+  _target_: src.metric.Original

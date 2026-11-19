@@ -1,3 +1,7 @@
-# HyperMSDE's built-in density (computed once from the initial points).
+# Adaptive angular k-NN density on the hypersphere (src.hypermsde.Density; computed once from the initial points).
 name: default
-fn: null
+fn:
+  _target_: src.hypermsde.Density
+  k: 20
+  clip: 3.0
+  chunk_size: ${model.chunk_size}

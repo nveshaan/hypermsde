@@ -1,0 +1,8 @@
+# The HyperMSDE paper's density (arXiv:2602.03293, Table 3): neighbour counts in the space of the fuzzy graph's rows.
+name: original
+fn:
+  _target_: src.density.Original
+  nbd_sample_count_threshold: 70      # original: 70
+  max_iters_weight_count: 4           # original: 4
+  satisfiability_proportion: 0.3      # original: 0.3
+  chunk_size: ${model.chunk_size}

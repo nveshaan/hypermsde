@@ -1,0 +1,4 @@
+# HyperMSDE's built-in step of the support points: none, they stay where they are (src.hypermsde.Step; used only with support > 0).
+name: default
+fn:
+  _target_: src.hypermsde.Step

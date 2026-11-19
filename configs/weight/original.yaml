@@ -1,0 +1,5 @@
+# The HyperMSDE paper's weights (arXiv:2602.03293): each selected neighbour counts by its density alone.
+name: original
+fn:
+  _target_: src.weight.original
+  _partial_: true

@@ -1,4 +1,4 @@
-"""Mean-shift density enhancement (HyperMSDE), on the unit sphere or in the raw feature space, in a single file.
+"""Mean-shift density enhancement (HyperMSDE), on the unit sphere or in the raw feature space, (the density functions are in ``density.py``).
 
 Every point of an embedding set is repeatedly moved towards a weighted mean of its neighbours until the
 movement converges. The pipeline, in the order ``HypersphericalMeanShiftDensityEnhancement.forward`` runs it:
@@ -9,14 +9,16 @@ movement converges. The pipeline, in the order ``HypersphericalMeanShiftDensityE
    normalising again (``unit(x - mean)``). 3 does the same after first centring the points on their Fréchet
    mean: each is mapped to the tangent space there (log map), which removes the shared mean direction, and put
    back on the sphere.
-2. **Density**: an empirical density per point, computed once on the initial points (or, with a ``density_fn``, at every iteration). A fuzzy k-nearest-neighbour graph is built; points are then compared as rows of that
-   sparse graph (sparse matmul), and a point's density is the average number of other points within a
-   radius, over a few shrinking radii.
-3. **Select neighbours**: every other point is scored by ``NeighborScore`` (distance x density x stability)
+2. **Density**: a density per point, by default the adaptive angular k-NN estimate ``Density``,
+   computed once on the initial points (or, with a ``density_fn``, at every iteration unless it is static).
+   ``src.density.Original`` is the density of the paper: points are compared as rows of the fuzzy
+   k-nearest-neighbour graph (built here, from the initial points), and a point's density is the average number
+   of other points within a radius, over a few shrinking radii.
+3. **Select neighbours**: every other point is scored by ``Score`` (distance x density x stability)
    and the ``k``
    best-scoring ones are kept. A dense, stable point can outrank a closer, sparse one.
 4. **Step**: each point moves a fraction ``learning_rate`` towards the weighted mean of its selected neighbours
-   (weights from ``NeighborWeight``), computed with one sparse matmul ``W @ X``, plus the bias of the support
+   (weights from ``Weight``), computed with one sparse matmul ``W @ X``, plus the bias of the support
    points if any are given (``bias_fn``); with ``sphere`` it is then put back on the sphere.
 5. **Repeat** (optionally re-selecting neighbours every ``recompute_neighbors`` iterations) until the mean
    per-point movement drops below ``shift_threshold`` or ``max_iters_shift`` is reached.
@@ -271,121 +273,6 @@ def _graph_layout(S):
     return rows_sorted, cols_sorted, vals_sorted, row_ptr, row_norm_sq
 
 
-def _make_pairwise_dist_kernel():
-    def _kernel(row_norm_sq, idx, cross):
-        sq_dist = row_norm_sq[:, None] + row_norm_sq[idx][None, :] - 2.0 * cross
-        return torch.sqrt(torch.clamp(sq_dist, min=0.0))
-    return torch.compile(_kernel, fullgraph=True)
-
-
-_PAIRWISE_DIST_KERNEL = _make_pairwise_dist_kernel()
-
-
-def _graph_chunk_dist(S, layout, start, end):
-    """Graph-space distances from the rows ``start:end`` to all rows. The cross terms are one sparse-times-dense
-    matmul, ``S @ chunk.T``, which is where the density computation spends its time."""
-    rows_sorted, cols_sorted, vals_sorted, row_ptr, row_norm_sq = layout
-    n = S.shape[0]
-    lo, hi = row_ptr[start], row_ptr[end]
-    chunk_dense = torch.zeros((end - start, n), dtype=row_norm_sq.dtype, device=S.device)
-    chunk_dense[rows_sorted[lo:hi] - start, cols_sorted[lo:hi]] = vals_sorted[lo:hi]
-    cross = torch.sparse.mm(S, chunk_dense.T)
-    idx = torch.arange(start, end, device=S.device)
-    return _PAIRWISE_DIST_KERNEL(row_norm_sq, idx, cross), idx
-
-
-def _radius_counts(S, layout, radius, chunk_size):
-    """For every row, the number of other rows within ``radius`` in graph space."""
-    n = S.shape[0]
-    counts = torch.zeros(n, dtype=torch.float32, device=S.device)
-    for start in range(0, n, chunk_size):
-        end = min(n, start + chunk_size)
-        dist, _ = _graph_chunk_dist(S, layout, start, end)
-        counts[start:end] = (dist < radius).sum(dim=0).float() - 1.0
-    return counts
-
-
-def _graph_distance_range(S, layout, chunk_size):
-    """Global (max, min) distance between two different rows in graph space."""
-    n = S.shape[0]
-    running_max = torch.tensor(float("-inf"), device=S.device)
-    running_min = torch.tensor(float("inf"), device=S.device)
-    for start in range(0, n, chunk_size):
-        end = min(n, start + chunk_size)
-        dist, idx = _graph_chunk_dist(S, layout, start, end)
-        self_mask = torch.zeros_like(dist, dtype=torch.bool)
-        self_mask[idx, torch.arange(idx.shape[0], device=S.device)] = True
-        running_max = torch.maximum(running_max, dist.masked_fill(self_mask, float("-inf")).max())
-        running_min = torch.minimum(running_min, dist.masked_fill(self_mask, float("inf")).min())
-    return running_max.item(), running_min.item()
-
-
-def _search_radius(S, layout, low, high, threshold, required, chunk_size, tol=1e-4, max_iter=50):
-    """Smallest radius at which at least ``required`` rows have more than ``threshold`` others inside it."""
-    lo, hi, result, found = low, high, high, False
-    for _ in range(max_iter):
-        mid = (lo + hi) / 2.0
-        counts = _radius_counts(S, layout, torch.tensor(mid, device=S.device), chunk_size)
-        if int((counts > threshold).sum().item()) >= required:
-            result, found, hi = mid, True, mid
-        else:
-            lo = mid
-        if abs(hi - lo) < tol:
-            break
-    return result, found
-
-
-@torch.no_grad()
-def graph_density(S, nbd_sample_count_threshold=70, max_iters_weight_count=4, satisfiability_proportion=0.3,
-                  chunk_size=DEFAULT_CHUNK_SIZE):
-    """Empirical density of every row of the fuzzy graph ``S`` (an (n, n) coalesced sparse tensor), as an (n,)
-    tensor (larger = denser).
-
-    The rows of ``S`` are compared as sparse vectors (sparse matmul), ``chunk_size`` rows at a time. The radius
-    is the smallest one at which at least ``satisfiability_proportion`` of the points have more than
-    ``nbd_sample_count_threshold`` others inside it (found by bisection, relaxed once if that fails). The density
-    of a point is its number of others within the radius, averaged over ``max_iters_weight_count`` radii
-    shrinking linearly to zero.
-    """
-    n = S.shape[0]
-    layout = _graph_layout(S)
-
-    max_dist, min_dist = _graph_distance_range(S, layout, chunk_size)
-    threshold = max(1, n - 1) if nbd_sample_count_threshold >= n else nbd_sample_count_threshold
-    required = int(satisfiability_proportion * n)
-    radius, found = _search_radius(S, layout, min_dist, max_dist, threshold, required, chunk_size)
-    if not found:
-        radius, found = _search_radius(S, layout, min_dist, max_dist, max(1, threshold // 2), required // 2, chunk_size)
-    if not found:
-        radius = max_dist
-    radius = torch.tensor(radius, dtype=torch.float32, device=S.device)
-
-    delta = (radius - 1e-6) / max_iters_weight_count
-    total = torch.zeros(n, dtype=torch.float32, device=S.device)
-    for _ in range(max_iters_weight_count):
-        total = total + _radius_counts(S, layout, radius, chunk_size)
-        radius = radius - delta
-    return total / max_iters_weight_count
-
-
-@torch.no_grad()
-def density_weights(X, nbd_sample_count_threshold=70, n_neighbors=15, n_epochs=200, max_iters_weight_count=4,
-                    satisfiability_proportion=0.3, chunk_size=DEFAULT_CHUNK_SIZE, metric="euclidean",
-                    return_graph=False):
-    """Empirical density of every row of ``X``, returned as an (n,) tensor (larger = denser).
-
-    A fuzzy ``n_neighbors``-nearest-neighbour graph of ``X`` (the UMAP fuzzy simplicial set: per-point scale,
-    fuzzy-union symmetrised weights in (0, 1], weak edges dropped) is built, by Euclidean or cosine ``metric``,
-    and its density is computed by ``graph_density``. ``chunk_size`` is the number of rows handled at a time,
-    both by the exact neighbour search that builds the graph and by the graph-space distances; it bounds the
-    memory of the whole computation. With ``return_graph`` the result is ``(density, graph)`` where ``graph`` is
-    that (n, n) coalesced sparse tensor.
-    """
-    S = _similarity_graph(X, n_neighbors, n_epochs, chunk_size, metric)
-    density = graph_density(S, nbd_sample_count_threshold, max_iters_weight_count, satisfiability_proportion, chunk_size)
-    return (density, S) if return_graph else density
-
-
 def _graph_rows(layout, start, end, n, dtype, device):
     """Dense (end - start, n) block of the graph rows ``start:end`` (row-aligned with a distance block)."""
     rows_sorted, cols_sorted, vals_sorted, row_ptr, _ = layout
@@ -427,7 +314,7 @@ def _call_with_memory(fn, args, memory, name):
     return result
 
 
-class NeighborScore:
+class Score:
     """How attractive every candidate is to a point: ``density^a * stability^b * exp(-c * d^2 / (2 h^2))``.
 
     The default selection score. ``a``, ``b`` and ``c`` are the density, stability and distance strengths
@@ -459,7 +346,7 @@ class NeighborScore:
         return density.pow(self.density_strength) * stability.pow(self.stability_strength) * kernel, memory
 
 
-class NeighborWeight:
+class Weight:
     """How much each selected neighbour pulls its point in the weighted mean: ``density^a * stability^b``.
 
     The default neighbour weight (distance is ignored, so every selected neighbour counts according to how
@@ -467,7 +354,7 @@ class NeighborWeight:
 
     A replacement must have the same call signature and also return the memory,
     ``weight(dist, density, stability, h, iteration, n_iters, graph, memory) -> (weights, memory)`` (the memory is
-    the dict shared by the four callables, see ``NeighborScore``), with the tensors ``dist``, ``density``,
+    the dict shared by the four callables, see ``Score``), with the tensors ``dist``, ``density``,
     ``stability`` and ``graph`` of shape (n, k) for the k selected neighbours of every point (``dist`` the current
     distances to them, ``stability`` their current scores, ``graph`` the weight of the UMAP
     fuzzy graph computed for the density between each point and each of its selected neighbours, 0 where the graph
@@ -485,6 +372,106 @@ class NeighborWeight:
         return density.pow(self.density_strength) * stability.pow(self.stability_strength), memory
 
 
+class Bias:
+    """The default pull of the support points on the points (the ``bias_fn`` used when ``support`` is given).
+
+    A step of ``learning_rate`` towards the mean of the support points: ``learning_rate * dist.mean(0)``. The bias
+    is added outside ``learning_rate``, so without it every point would jump onto the support mean.
+
+    A replacement must have the same call signature and also return the memory,
+    ``bias(dist, density, stability, h, learning_rate, iteration, n_iters, memory) -> (bias, memory)``, where
+    ``dist`` is the (s, n, d) difference ``support[j] - x[i]`` and ``bias`` the (n, d) vector added to every
+    point's step.
+    """
+
+    def __call__(self, dist, density, stability, h, learning_rate, iteration, n_iters, memory):
+        return learning_rate * dist.mean(0), memory
+
+
+class Density:
+    """Adaptive angular k-NN density on the unit hypersphere (the default ``density_fn``).
+
+    1. Normalise every point, and take the chord distance ``sqrt(2 - 2 x_i . x_j)`` (the Euclidean distance of
+       unit vectors) to the ``k`` nearest other points; ``r_ij`` is the distance to the j-th neighbour.
+    2. Estimate the intrinsic dimension with the k-NN maximum-likelihood estimator
+       ``D = [mean_i mean_{j<k} log(r_ik / r_ij)]^-1`` (one value for all the points).
+    3. The raw density is ``q_i = -D log(r_ik)``: a small neighbour radius means a dense point.
+    4. ``z_i = (q_i - mean(q)) / std(q)`` and the density is ``exp(clip(z_i, -clip, clip))``, positive and
+       within ``[exp(-clip), exp(clip)]``.
+
+    ``k`` is lowered to ``n - 1`` for a small set; with fewer than 3 points the density is 1.0 everywhere.
+    ``chunk_size`` is the number of rows handled at a time by the exact neighbour search.
+    """
+
+    static = True
+
+    def __init__(self, k=20, clip=3.0, chunk_size=DEFAULT_CHUNK_SIZE):
+        if isinstance(k, bool) or not isinstance(k, int) or k < 2:
+            raise ValueError(f"k must be an integer >= 2; got {k!r}")
+        if not clip > 0:
+            raise ValueError(f"clip must be > 0; got {clip!r}")
+        self.k = k
+        self.clip = clip
+        self.chunk_size = chunk_size
+
+    @torch.no_grad()
+    def __call__(self, x, density, stability, iteration, n_iters, graph, memory):
+        n = x.shape[0]
+        k = min(self.k, n - 1)
+        if k < 2:
+            return torch.ones(n, dtype=x.dtype, device=x.device), memory
+        eps = 1e-12
+        _, dist = knn(unit(x), k + 1, chunk_size=self.chunk_size)            # the point itself comes first, at 0
+        dist = dist[:, 1:].clamp_min(eps)                                    # (n, k): the k nearest other points
+        r = dist[:, -1]                                                      # k-th neighbour radius
+        intrinsic_dim = 1.0 / torch.log(r.unsqueeze(1) / dist[:, :-1]).mean().clamp_min(eps)
+        raw = -intrinsic_dim * torch.log(r)
+        z = (raw - raw.mean()) / raw.std().clamp_min(eps)
+        return torch.exp(z.clamp(-self.clip, self.clip)).to(x.dtype), memory
+
+
+class Metric:
+    """The default metric: how far each point moved in the iteration, ``|moved - x|``.
+
+    Summed over the iterations it is the distance each point travelled (the sum of its step lengths; chords on
+    the sphere). A replacement has the same signature and also returns the memory,
+    ``metric(moved, x, density, stability, h, iteration, n_iters, graph, memory) -> (metric, memory)``, with an
+    (n,) metric; ``forward`` sums the values over the iterations.
+    """
+
+    @torch.no_grad()
+    def __call__(self, moved, x, density, stability, h, iteration, n_iters, graph, memory):
+        return (moved - x).norm(dim=1), memory
+
+
+class Stability:
+    """The default stability update: none, the scores stay at their initial 1.0.
+
+    It is marked ``static``, so ``forward`` does not call it and does not re-evaluate the weights every iteration
+    because of it. A replacement has the signature
+    ``stability(moved, x, density, stability, h, iteration, n_iters, graph, memory) -> (stability, memory)``.
+    """
+
+    static = True
+
+    def __call__(self, moved, x, density, stability, h, iteration, n_iters, graph, memory):
+        return stability, memory
+
+
+class Step:
+    """The default step of the support points: none, they stay where they are.
+
+    It is marked ``static``, so ``forward`` does not call it. A replacement has the same signature as the bias,
+    ``step(dist, density, stability, h, learning_rate, iteration, n_iters, memory) -> (step, memory)``, and
+    returns the (s, d) vectors added to the support points.
+    """
+
+    static = True
+
+    def __call__(self, dist, density, stability, h, learning_rate, iteration, n_iters, memory):
+        return torch.zeros_like(dist[:, 0]), memory
+
+
 @torch.no_grad()
 def select_neighbors(X, density, stability, k, h, score_fn, graph,
                      labels=None, chunk_size=DEFAULT_CHUNK_SIZE, iteration=0, n_iters=1, memory=None,
@@ -496,7 +483,7 @@ def select_neighbors(X, density, stability, k, h, score_fn, graph,
     the remaining slots (if any) go to the nearest candidates. With ``labels`` a point may only pick points
     labelled 0, whatever its own label.
 
-    ``iteration``, ``n_iters``, the rows of the fuzzy ``graph`` (see ``density_weights``) and the shared
+    ``iteration``, ``n_iters``, the rows of the fuzzy ``graph`` (see ``_similarity_graph``) and the shared
     ``memory`` dict (an empty one if omitted) are handed on to ``score_fn``, a chunk of rows at a time, the memory
     passing through the chunks in turn.
 
@@ -649,8 +636,7 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
     Parameters
     ----------
     k : number of neighbours each point is pulled towards.
-    nbd_sample_count_threshold, n_neighbors, n_epochs, max_iters_weight_count, satisfiability_proportion :
-        the density computation (see ``density_weights``).
+    n_neighbors, n_epochs : the fuzzy neighbour graph (UMAP fuzzy simplicial set) of the initial points.
     learning_rate : fraction of the way a point moves towards its weighted mean each iteration.
     max_iters_shift, shift_threshold : the loop stops when the mean per-point movement is below
         ``shift_threshold`` (convergence) or after ``max_iters_shift`` iterations (a safety cap).
@@ -670,7 +656,7 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         trajectory's first state, is in the centred space. The mean is available as ``center_`` afterwards
         (``None`` for 0 and 1).
     distance_strength, density_strength, stability_strength : the strengths of the default selection score
-        and neighbour weight (see ``NeighborScore`` and ``NeighborWeight``); >= 0, 0 switches a factor off.
+        and neighbour weight (see ``Score`` and ``Weight``); >= 0, 0 switches a factor off.
     h : kernel width of the distance term, a positive number, or "auto" (median distance to the ``k`` nearest neighbours,
         re-estimated every time neighbours are selected).
     """
@@ -678,11 +664,8 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
     def __init__(
         self,
         k=100,
-        nbd_sample_count_threshold=70,
         n_neighbors=15,
         n_epochs=200,
-        max_iters_weight_count=4,
-        satisfiability_proportion=0.3,
         learning_rate=0.1,
         max_iters_shift=1000,
         shift_threshold=1e-4,
@@ -721,11 +704,8 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             raise ValueError(f"h must be a positive number or 'auto'; got {h!r}")
 
         self.k = k
-        self.nbd_sample_count_threshold = nbd_sample_count_threshold
         self.n_neighbors = n_neighbors
         self.n_epochs = n_epochs
-        self.max_iters_weight_count = max_iters_weight_count
-        self.satisfiability_proportion = satisfiability_proportion
         self.learning_rate = learning_rate
         self.max_iters_shift = max_iters_shift
         self.shift_threshold = shift_threshold
@@ -735,8 +715,13 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         self.recompute_neighbors = recompute_neighbors or 0
         self.sphere = sphere
         self.h = h
-        self.default_score = NeighborScore(distance_strength, density_strength, stability_strength)
-        self.default_weight = NeighborWeight(density_strength, stability_strength)
+        self.density = Density(chunk_size=chunk_size)
+        self.metric = Metric()
+        self.stability = Stability()
+        self.step = Step()
+        self.score = Score(distance_strength, density_strength, stability_strength)
+        self.bias = Bias()
+        self.weight = Weight(density_strength, stability_strength)
 
     def _labels(self, labels, n):
         """``labels`` given to ``forward`` as a long tensor on the device (or ``None``)."""
@@ -779,18 +764,20 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             High-mass support points. They interact with ``X`` only through ``bias_fn``: they are never neighbours
             and take no part in the density, the fuzzy graph or ``h``. They are mapped into the same space as ``X``
             (normalised, and centred with the same mean as ``X`` with ``sphere`` 2 or 3), move only through ``step_fn``
-            and are available as ``support_`` afterwards. Requires ``bias_fn``.
+            and are available as ``support_`` afterwards. Acts on the points through ``bias_fn`` (default ``Bias``).
         dist : {``"euclidean"``, ``"cosine"``}
             Distance used for the fuzzy graph, neighbour selection, ``h="auto"``, and ``score_fn``/``weight_fn``.
             With ``sphere`` 1, 2 or 3 the points always stay on the unit sphere.
         density_fn : optional callable
-            Replaces the density. It is called at the start of every iteration, before neighbour selection.
-            Without one, density is computed once from the initial points. The final density is ``density_``.
+            Replaces the density (see ``Density``, and ``Original`` in ``src/density.py``). It is called at the start of every iteration, before
+            neighbour selection, unless it has a true ``static`` attribute: then it is called once, at the first
+            iteration, and the weights are not re-evaluated every iteration because of it. Without one, ``Density``
+            (adaptive angular k-NN, static) is used. The final density is ``density_``.
         score_fn : optional callable
-            Replaces the selection score (see ``NeighborScore``). It is called at every neighbour selection,
+            Replaces the selection score (see ``Score``). It is called at every neighbour selection,
             including the initial one.
         weight_fn : optional callable
-            Replaces the weights used for the weighted mean (see ``NeighborWeight``). A supplied function is
+            Replaces the weights used for the weighted mean (see ``Weight``). A supplied function is
             evaluated at the start of every iteration using current neighbour distances and stability scores.
         stability_fn : optional callable
             Updates the (n,) stability scores after each iteration. It is called as
@@ -800,11 +787,12 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             updated scores affect the next iteration's weights and later neighbour selections. The final scores
             are available as ``stability_``.
         metric_fn : optional callable
-            Computes a custom metric after each iteration. It receives the same arguments as ``stability_fn`` and
-            returns ``(metric, memory)``. The value from the last completed iteration is returned as the second
-            item instead of the default summed per-point movement.
+            Computes a metric after each iteration. It receives the same arguments as ``stability_fn`` and
+            returns ``(metric, memory)``; the values of all the iterations are summed and returned as the second
+            item. Without one, ``Metric`` is used: the distance each point moved.
         bias_fn : optional callable
-            The pull of the support on the points, required with ``support``. It is called every iteration as
+            The pull of the support on the points; without one, ``Bias`` (a step of ``learning_rate`` towards the
+            mean of the support points) is used. It is called every iteration as
             ``bias_fn(dist, density, stability, h, learning_rate, iteration, n_iters, memory)``, where ``dist`` is
             the (s, n, d) tensor of feature-wise differences ``support[j] - x[i]`` at the current positions,
             ``density`` and ``stability`` are (n,) and ``h`` the kernel width in use. It returns a finite (n, d)
@@ -820,7 +808,7 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         shifted : (n, d) tensor
             Unit-norm points after the last iteration.
         metric :
-            With ``metric_fn``, the sum of its per-iteration metric values; otherwise the (n,) sum of each point's
+            The sum of the per-iteration values of ``metric_fn``; by default the (n,) sum of each point's
             per-iteration step lengths (chords on the sphere with ``sphere`` 1, 2 or 3).
         trajectory : list of (n, d) tensors
             Initial state followed by each iteration's state when ``keep_trajectory=True``; otherwise empty.
@@ -843,15 +831,21 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         if support is None and (bias_fn is not None or step_fn is not None):
             raise ValueError("bias_fn and step_fn need support points")
         if support is not None and bias_fn is None:
-            raise ValueError("support needs a bias_fn: the support acts on the points only through the bias")
+            bias_fn = self.bias
 
         stability = torch.ones(n, dtype=X.dtype, device=X.device)           # every point starts fully stable
         memory = {}                                                          # shared by all the callables: empty at the start
         labels = self._labels(labels, n)
         support = self._support(support, X.shape[1], X.dtype)
-        score_fn = score_fn if score_fn is not None else self.default_score
-        weights_every_iteration = weight_fn is not None or stability_fn is not None or density_fn is not None
-        weight_fn = weight_fn if weight_fn is not None else self.default_weight
+        score_fn = score_fn if score_fn is not None else self.score
+        density_fn = density_fn if density_fn is not None else self.density
+        stability_fn = stability_fn if stability_fn is not None else self.stability
+        step_fn = step_fn if step_fn is not None else self.step
+        static_density = bool(getattr(density_fn, "static", False))          # depends on the initial points only
+        static_stability = bool(getattr(stability_fn, "static", False))      # never changes the scores
+        static_step = bool(getattr(step_fn, "static", False))                # never moves the support
+        weights_every_iteration = weight_fn is not None or not static_stability or not static_density
+        weight_fn = weight_fn if weight_fn is not None else self.weight
         n_iters = self.max_iters_shift
 
         x = unit(X) if self.sphere else X                                    # on the sphere from the start (sphere 1, 2)
@@ -868,18 +862,14 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             elif self.sphere == 3:
                 support = unit(_log_map(self.center_.unsqueeze(0), support))
         graph = _similarity_graph(x, self.n_neighbors, self.n_epochs, self.chunk_size, dist)
-        if density_fn is None:
-            density = graph_density(graph, self.nbd_sample_count_threshold, self.max_iters_weight_count,
-                                    self.satisfiability_proportion, self.chunk_size).clamp_min(0.0).to(x.dtype)
-        else:
-            density = torch.ones(n, dtype=x.dtype, device=x.device)         # replaced at the start of every iteration
+        density = torch.ones(n, dtype=x.dtype, device=x.device)             # replaced at the start of the iterations
 
-        total_distance = torch.zeros(n, dtype=x.dtype, device=x.device)
+        metric_fn = metric_fn if metric_fn is not None else self.metric
         metric = None
         trajectory = [x.clone()] if self.keep_trajectory else []
         state, indices, nbr_dist, valid, orphan, h, graph_pairs = None, None, None, None, None, None, None
         for iteration in range(n_iters):
-            if density_fn is not None:
+            if iteration == 0 or not static_density:
                 density, memory = _call_with_memory(
                     density_fn, (x, density, stability, iteration, n_iters, graph), memory, "the density function")
                 if density.shape != (n,) or not bool(torch.isfinite(density).all()) or bool((density < 0).any()):
@@ -909,7 +899,7 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
                     bias_fn, diff, density, stability, h, self.learning_rate, iteration, n_iters, memory, n,
                     "the bias function")
                 moved = moved + bias                                          # outside the learning rate
-                if step_fn is not None:
+                if not static_step:
                     support_step, memory = support_vectors(
                         step_fn, diff, density, stability, h, self.learning_rate, iteration, n_iters, memory,
                         support.shape[0], "the support step function")
@@ -925,21 +915,19 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             step = moved - previous                                           # this iteration's step vectors
             change = step.norm(dim=1)
 
-            total_distance = total_distance + change
             stability_before = stability
             x = moved
             if self.keep_trajectory:
                 trajectory.append(x.clone())
             mean_change = change.mean().item()
             logger.debug("iteration %d: mean movement %.6f", iteration + 1, mean_change)
-            if stability_fn is not None:
+            if not static_stability:
                 stability, memory = update_stability(
                     stability_fn, moved, previous, density, stability_before, h, iteration, n_iters, graph, memory)
-            if metric_fn is not None:
-                metric_step, memory = _call_with_memory(
-                    metric_fn, (moved, previous, density, stability_before, h, iteration, n_iters, graph), memory,
-                    "the metric function")
-                metric = metric_step if metric is None else metric + metric_step
+            metric_step, memory = _call_with_memory(
+                metric_fn, (moved, previous, density, stability_before, h, iteration, n_iters, graph), memory,
+                "the metric function")
+            metric = metric_step if metric is None else metric + metric_step
             if mean_change < self.shift_threshold:
                 logger.info("converged after %d iterations", iteration + 1)
                 break
@@ -948,7 +936,7 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         self.stability_ = stability                                          # the final scores (1.0 without a stability_fn)
         self.memory_ = memory                                                # the shared memory after the run
         self.support_ = support                                              # the final support (None without one)
-        return x, metric if metric_fn is not None else total_distance, trajectory
+        return x, metric, trajectory
 
 
 hypermsde = HypersphericalMeanShiftDensityEnhancement
