@@ -39,9 +39,9 @@ def unary_only(image_tensor, output_logits):
 
 
 def restore_extended_attention_mask() -> None:
-    """GroundingDINO's BERT wrapper calls BertModel.get_extended_attention_mask, which transformers 5 dropped."""
+    """GroundingDINO's BERT wrapper binds three BertModel mask helpers that transformers 5 dropped."""
     from transformers import BertModel
-    if hasattr(BertModel, "get_extended_attention_mask"):
+    if hasattr(BertModel, "get_head_mask"):
         return
 
     def get_extended_attention_mask(self, attention_mask, input_shape=None, device=None, dtype=None):
@@ -49,7 +49,19 @@ def restore_extended_attention_mask() -> None:
         extended = attention_mask[:, None, None, :] if attention_mask.dim() == 2 else attention_mask[:, None, :, :]
         return (1.0 - extended.to(dtype)) * torch.finfo(dtype).min
 
+    def invert_attention_mask(self, encoder_attention_mask):
+        extended = encoder_attention_mask[:, None, None, :] if encoder_attention_mask.dim() == 2 \
+            else encoder_attention_mask[:, None, :, :]
+        return (1.0 - extended.to(self.dtype)) * torch.finfo(self.dtype).min
+
+    def get_head_mask(self, head_mask, num_hidden_layers, is_attention_chunked=False):
+        if head_mask is not None:
+            raise NotImplementedError("head_mask is not used by GroundingDINO")
+        return [None] * num_hidden_layers
+
     BertModel.get_extended_attention_mask = get_extended_attention_mask
+    BertModel.invert_attention_mask = invert_attention_mask
+    BertModel.get_head_mask = get_head_mask
 
 
 @contextlib.contextmanager
