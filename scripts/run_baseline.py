@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 # Hydra 1.3 passes a lazy help object to argparse. Python 3.14 tightened
 # argparse's help validation to require a string.
@@ -128,6 +129,11 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         cache = EncodingCache(cache_root if cache_root.is_absolute() else PROJECT_ROOT / cache_root,
                               cfg.baselines.name, encoding_settings(cfg, method, overrides), cfg.modality, name)
     encodings = Encodings(method.encode, load_images, cache)
+
+    def progress(stage):   # on stderr; "<stage> ..." so that the sweep's log filter (lines starting with a modality) skips it
+        return tqdm(total=len(needed), desc=f"{stage} {cfg.baselines.name} {cfg.modality}/{name}", unit="img",
+                    file=sys.stderr, mininterval=15, leave=False)
+
     needed = np.flatnonzero(np.any([run.mask for run in runs], axis=0))
     if few_shot:
         # The support images are encoded once, pinned in memory, and not encoded again when they are scored for
@@ -136,8 +142,11 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
     if getattr(method, "encode_first", False):
         # Baselines with a separate model for the encoding: every image is encoded before the models of the next
         # stage are loaded, and the encoder is released, so the models never share the memory.
-        for start in range(0, len(needed), cfg.encode_chunk):
-            encodings.pin(keep[needed[start:start + cfg.encode_chunk]])
+        with progress("encoding") as bar:
+            for start in range(0, len(needed), cfg.encode_chunk):
+                block = needed[start:start + cfg.encode_chunk]
+                encodings.pin(keep[block])
+                bar.update(len(block))
         method.release_encoder()
     if few_shot:
         fit_many = getattr(method, "fit_many", None) or (
@@ -149,13 +158,15 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
     else:
         runs[0].head = method
 
-    for start in range(0, len(needed), cfg.encode_chunk):
-        block = needed[start:start + cfg.encode_chunk]
-        items = encodings.get(keep[block])
-        for run in runs:
-            chosen = np.flatnonzero(run.mask[block])
-            if len(chosen):
-                run.score[block[chosen]] = run.head.score_encoded([items[j] for j in chosen])
+    with progress("scoring") as bar:
+        for start in range(0, len(needed), cfg.encode_chunk):
+            block = needed[start:start + cfg.encode_chunk]
+            items = encodings.get(keep[block])
+            for run in runs:
+                chosen = np.flatnonzero(run.mask[block])
+                if len(chosen):
+                    run.score[block[chosen]] = run.head.score_encoded([items[j] for j in chosen])
+            bar.update(len(block))
     for run in runs:
         log_run(cfg, name, keep, run)
 

@@ -132,18 +132,25 @@ def memoize(function, size):
 
 
 class ChunkedFunctional:
-    """torch.nn.functional whose cosine_similarity runs in chunks: the authors' patch-to-reference comparison
-    broadcasts to 2**32 elements, which MPS cannot index."""
+    """torch.nn.functional whose cosine_similarity does not materialise the broadcast: the authors' patch-to-reference
+    comparison, (n, 1, D) against (1, N, D), would build an (n, N, D) tensor (2**32 elements, which MPS cannot index,
+    and gigabytes for K support images: N = K * 1024). It is computed as the product of the normalised rows, in
+    row chunks that keep the (n, N) result under `budget` elements. Other shapes go through torch unchanged."""
 
     def __getattr__(self, name):
         return getattr(F, name)
 
     @staticmethod
-    def cosine_similarity(x1, x2, dim=1, eps=1e-8, chunk=64):
-        if max(x1.shape[0], x2.shape[0]) <= chunk or x1.shape[0] != max(x1.shape[0], x2.shape[0]):
+    def cosine_similarity(x1, x2, dim=1, eps=1e-8, budget=2 ** 26):
+        pairwise = (x1.dim() == 3 and x2.dim() == 3 and x1.shape[1] == 1 and x2.shape[0] == 1
+                    and dim in (2, -1) and x1.shape[2] == x2.shape[2])
+        if not pairwise:
             return F.cosine_similarity(x1, x2, dim=dim, eps=eps)
-        return torch.cat([F.cosine_similarity(x1[i:i + chunk], x2, dim=dim, eps=eps)
-                          for i in range(0, x1.shape[0], chunk)])
+        a, b = x1[:, 0], x2[0]
+        a = a / a.norm(dim=1, keepdim=True).clamp_min(eps)   # torch clamps each norm by eps, as it does
+        b = b / b.norm(dim=1, keepdim=True).clamp_min(eps)
+        rows = max(1, budget // len(b))
+        return torch.cat([a[i:i + rows] @ b.T for i in range(0, len(a), rows)])
 
 
 class UniVAD:
@@ -155,7 +162,7 @@ class UniVAD:
     encode_first = True   # segment every image (GroundingDINO + SAM-HQ) before CLIP and DINOv2 are loaded
 
     def __init__(self, repo_url, repo_dir, grounding, modality="chest", device="auto", image_size=448, seed=0,
-                 memo_size=64, **_):
+                 memo_size=16, **_):
         repo = prepare_repo(repo_url, repo_dir)
         if not (repo / "models" / "dinov2" / "hubconf.py").exists():
             subprocess.run(["git", "-C", str(repo), "submodule", "update", "--init", "--depth", "1", "models/dinov2"],
