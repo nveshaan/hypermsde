@@ -35,6 +35,10 @@ class _Affine:
 
 class MediCLIP:
     requires_support = True
+    # The frozen CLIP's patch tokens of an image are the only inference on the images to score; the necker, adapter
+    # and prompts trained on the support read them.
+    encode_keys = ("config",)
+    fingerprint_extra = {}
 
     def __init__(self, repo_url, repo_dir, config="config/chexpert.yaml", device="auto", epochs=None, seed=100,
                  **_):
@@ -65,6 +69,8 @@ class MediCLIP:
             self.cfg.epoch = epochs
         self.seed = seed
         self.device = choose_device(device)
+        self.fingerprint_extra = {"model": self.cfg.model_name, "image_size": self.cfg.image_size,
+                                  "layers_out": list(self.cfg.layers_out)}
 
         self.clip, self.preprocess, model_cfg = open_clip.create_model_and_transforms(
             self.cfg.model_name, self.cfg.image_size, device=self.device)
@@ -98,51 +104,72 @@ class MediCLIP:
 
         return Support(args=self.cfg, source="", preprocess=self.preprocess)
 
-    def fit(self, images) -> None:
-        m, cfg = self.modules, self.cfg
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        torch.manual_seed(self.seed)
-        self.necker = m.Necker(clip_model=self.clip).to(self.device)
-        self.adapter = m.Adapter(clip_model=self.clip, target=self.embed_dim).to(self.device)
-        self.prompt_maker = m.PromptMaker(prompts=cfg.prompts, clip_model=self.clip, n_ctx=cfg.n_learnable_token,
-                                          CSC=cfg.CSC, class_token_position=cfg.class_token_positions).to(self.device)
-        self.map_maker = m.MapMaker(image_size=cfg.image_size).to(self.device)
-        optimizer = torch.optim.Adam([
-            {"params": self.prompt_maker.prompt_learner.parameters(), "lr": 0.001},
-            {"params": self.adapter.parameters(), "lr": 0.001},
-        ], lr=0.001, betas=(0.5, 0.999))
-        loader = DataLoader(self._support_dataset(images), batch_size=cfg.batch_size, shuffle=True, num_workers=0)
-        focal, dice = m.FocalLoss(), m.BinaryDiceLoss()
-
-        # train_one_epoch of the authors' train.py, for every epoch
-        self.adapter.train()
-        self.prompt_maker.train()
-        for _ in range(cfg.epoch):
-            for batch in loader:
-                # The synthesised masks are float64, which MPS does not support.
-                x, mask = batch["image"].to(self.device), batch["mask"].float().to(self.device)
-                with torch.no_grad():
-                    _, tokens = self.clip.encode_image(x, out_layers=cfg.layers_out)
-                    features = self.necker(tokens)
-                adapted = self.adapter(features)
-                anomaly_map = self.map_maker(adapted, self.prompt_maker(adapted))
-                loss = focal(anomaly_map, mask) + dice(anomaly_map[:, 1, :, :], mask)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-        self.adapter.eval()
-        self.prompt_maker.eval()
-
     @torch.no_grad()
-    def score(self, images) -> np.ndarray:
-        size, scores = self.cfg.image_size, []
+    def encode(self, images) -> list:
+        """The tokens of the CLIP layers `layers_out` of every image, as a tuple of arrays."""
+        size, items = self.cfg.image_size, []
         for i in range(0, len(images), self.cfg.batch_size):
             x = torch.stack([
                 self.preprocess(img.convert("RGB").resize((size, size), PIL.Image.Resampling.BILINEAR))
                 for img in images[i:i + self.cfg.batch_size]
             ]).to(self.device)
             _, tokens = self.clip.encode_image(x, out_layers=self.cfg.layers_out)
+            tokens = [t.float().cpu().numpy() for t in tokens]
+            items.extend(tuple(t[b] for t in tokens) for b in range(len(x)))
+        return items
+
+    def fit(self, images, encoded=None) -> "Fitted":
+        m, cfg = self.modules, self.cfg
+        random.seed(self.seed)
+        np.random.seed(self.seed)
+        torch.manual_seed(self.seed)
+        necker = m.Necker(clip_model=self.clip).to(self.device)
+        adapter = m.Adapter(clip_model=self.clip, target=self.embed_dim).to(self.device)
+        prompt_maker = m.PromptMaker(prompts=cfg.prompts, clip_model=self.clip, n_ctx=cfg.n_learnable_token,
+                                     CSC=cfg.CSC, class_token_position=cfg.class_token_positions).to(self.device)
+        map_maker = m.MapMaker(image_size=cfg.image_size).to(self.device)
+        optimizer = torch.optim.Adam([
+            {"params": prompt_maker.prompt_learner.parameters(), "lr": 0.001},
+            {"params": adapter.parameters(), "lr": 0.001},
+        ], lr=0.001, betas=(0.5, 0.999))
+        loader = DataLoader(self._support_dataset(images), batch_size=cfg.batch_size, shuffle=True, num_workers=0)
+        focal, dice = m.FocalLoss(), m.BinaryDiceLoss()
+
+        # train_one_epoch of the authors' train.py, for every epoch
+        adapter.train()
+        prompt_maker.train()
+        for _ in range(cfg.epoch):
+            for batch in loader:
+                # The synthesised masks are float64, which MPS does not support.
+                x, mask = batch["image"].to(self.device), batch["mask"].float().to(self.device)
+                with torch.no_grad():
+                    _, tokens = self.clip.encode_image(x, out_layers=cfg.layers_out)
+                    features = necker(tokens)
+                adapted = adapter(features)
+                anomaly_map = map_maker(adapted, prompt_maker(adapted))
+                loss = focal(anomaly_map, mask) + dice(anomaly_map[:, 1, :, :], mask)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+        adapter.eval()
+        prompt_maker.eval()
+        return Fitted(self, necker, adapter, prompt_maker, map_maker)
+
+
+class Fitted:
+    """MediCLIP trained on one support: the scorer of the encoded images."""
+
+    def __init__(self, method, necker, adapter, prompt_maker, map_maker):
+        self.method, self.necker, self.adapter = method, necker, adapter
+        self.prompt_maker, self.map_maker = prompt_maker, map_maker
+
+    @torch.no_grad()
+    def score_encoded(self, items) -> np.ndarray:
+        method, scores = self.method, []
+        for i in range(0, len(items), method.cfg.batch_size):
+            batch = items[i:i + method.cfg.batch_size]
+            tokens = [torch.from_numpy(np.stack([item[layer] for item in batch])).to(method.device)
+                      for layer in range(len(batch[0]))]
             adapted = self.adapter(self.necker(tokens))
             anomaly_map = self.map_maker(adapted, self.prompt_maker(adapted))[:, 1]
             scores.append(anomaly_map.flatten(1).max(1).values.float().cpu().numpy())

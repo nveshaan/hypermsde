@@ -5,9 +5,14 @@ As in the authors' pipeline, every image (support and query) is first segmented 
 the references of UniVAD.setup. The masks are cached by image content, so they are computed once per image.
 Image-level score: the model's pred_score.
 
+The authors' forward runs the CLIP, DINOv2 and DINO networks on the query inside the same function that compares it
+with the support. To score one image against several supports without running them again, their calls are
+memoised by input (`memoize`), and the state `setup` leaves on the model is kept per support (`Fitted`).
+
 Deviation: pydensecrf does not build on Python 3.14, so the dense CRF that refines the part heatmaps of the
 MULTI-component branch returns its unary probabilities (the CRF's starting point) instead.
 """
+import collections
 import contextlib
 import functools
 import hashlib
@@ -19,6 +24,7 @@ import warnings
 import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
 from torchvision import transforms as T
 
 from baselines.common import choose_device, prepare_repo, redirect_cuda
@@ -85,6 +91,43 @@ def cuda_alias(device: str):
         torch.cuda.is_available, torch.load = available, load
 
 
+def memoize(function, size):
+    """`function` with its last `size` results kept, by the content of its inputs: the same input is not run again.
+    Results are handed out as shallow copies of their containers, because the authors' code edits the lists a
+    network returns in place (LinearLayer)."""
+    results = collections.OrderedDict()
+
+    def fresh(value):
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, (list, tuple)):
+            return type(value)(fresh(v) for v in value)
+        return value
+
+    def digest(value):
+        if isinstance(value, torch.Tensor):
+            return hashlib.sha1(value.detach().cpu().contiguous().numpy().tobytes()).hexdigest() + str(value.shape)
+        if isinstance(value, np.ndarray):
+            return hashlib.sha1(value.tobytes()).hexdigest() + str(value.shape)
+        if isinstance(value, (list, tuple)):
+            return "[" + ",".join(digest(v) for v in value) + "]"
+        return repr(value)
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        key = digest((args, sorted(kwargs.items())))
+        if key in results:
+            results.move_to_end(key)
+            return fresh(results[key])
+        result = function(*args, **kwargs)
+        results[key] = fresh(result)
+        if len(results) > size:
+            results.popitem(last=False)
+        return result
+
+    return wrapper
+
+
 class ChunkedFunctional:
     """torch.nn.functional whose cosine_similarity runs in chunks: the authors' patch-to-reference comparison
     broadcasts to 2**32 elements, which MPS cannot index."""
@@ -102,8 +145,13 @@ class ChunkedFunctional:
 
 class UniVAD:
     requires_support = True
+    # What is cached is the saved image and its masks (on disk, by content); the networks' outputs on the query are
+    # memoised in memory.
+    encode_keys = ("image_size", "grounding", "modality")
+    fingerprint_extra = {}
 
-    def __init__(self, repo_url, repo_dir, grounding, modality="chest", device="auto", image_size=448, seed=0, **_):
+    def __init__(self, repo_url, repo_dir, grounding, modality="chest", device="auto", image_size=448, seed=0,
+                 memo_size=64, **_):
         repo = prepare_repo(repo_url, repo_dir)
         if not (repo / "models" / "dinov2" / "hubconf.py").exists():
             subprocess.run(["git", "-C", str(repo), "submodule", "update", "--init", "--depth", "1", "models/dinov2"],
@@ -141,6 +189,12 @@ class UniVAD:
             segmentation.sam_hq_model_registry = {**segmentation.sam_hq_model_registry, "vit_h": sam}
             self.segment = segmentation.grounding_segmentation
             self.model = module.UniVAD(image_size=image_size).to(self.device)
+        # The networks run on the query inside the authors' forward; keep their outputs for the next support.
+        self.model.clip_model.encode_image = memoize(self.model.clip_model.encode_image, memo_size)
+        self.model.dinov2_net.forward_features = memoize(self.model.dinov2_net.forward_features, memo_size)
+        self.model.dino_net.forward = memoize(self.model.dino_net.forward, memo_size)
+        extractor = self.model.component_feature_extractor
+        extractor.extract = memoize(extractor.extract, memo_size)
         self.transform = T.Compose([T.Resize((image_size, image_size)), T.ToTensor()])
 
     def _paths(self, images) -> list[str]:
@@ -159,12 +213,22 @@ class UniVAD:
                 self.segment(todo, "./masks", self.grounding)
         return paths
 
-    def fit(self, images) -> None:
-        paths = self._paths(images)
+    def encode(self, images) -> list:
+        """The image and the path of its saved copy, whose masks have been computed: the networks run in the
+        forward of `Fitted`, memoised."""
+        return [(np.asarray(image), np.array(path)) for image, path in zip(images, self._paths(images))]
+
+    def fit(self, images, encoded) -> "Fitted":
         samples = torch.stack([self.transform(image) for image in images]).to(self.device)
+        before = dict(vars(self.model))
         with contextlib.chdir(self.repo), cuda_alias(self.device):
-            self.model.setup({"few_shot_samples": samples, "dataset_category": self.category, "image_path": paths})
+            self.model.setup({"few_shot_samples": samples, "dataset_category": self.category,
+                              "image_path": [str(path) for _, path in encoded]})
         self._concatenate_leftovers()
+        # What setup left on the model (the support's features, its gate, ...), to put back before scoring. A later
+        # setup replaces these objects rather than editing them, so the references stay valid.
+        state = {key: value for key, value in vars(self.model).items() if before.get(key) is not value}
+        return Fitted(self, state)
 
     def _concatenate_leftovers(self) -> None:
         """UniVAD.setup concatenates each part's support features only for the part indices of the last support
@@ -179,12 +243,21 @@ class UniVAD:
                 if isinstance(feats, list) and feats:
                     layer[idx] = torch.cat(feats, dim=0)
 
+
+
+class Fitted:
+    """UniVAD set up on one support: the scorer of the encoded images."""
+
+    def __init__(self, method: UniVAD, state: dict):
+        self.method, self.state = method, state
+
     @torch.no_grad()
-    def score(self, images) -> np.ndarray:
-        paths = self._paths(images)
+    def score_encoded(self, items) -> np.ndarray:
+        method = self.method
+        vars(method.model).update(self.state)
         scores = []
-        with contextlib.chdir(self.repo), cuda_alias(self.device):
-            for image, path in zip(images, paths):
-                x = self.transform(image).unsqueeze(0).to(self.device)
-                scores.append(float(self.model(x, path)["pred_score"]))
+        with contextlib.chdir(method.repo), cuda_alias(method.device):
+            for array, path in items:
+                x = method.transform(Image.fromarray(array)).unsqueeze(0).to(method.device)
+                scores.append(float(method.model(x, str(path))["pred_score"]))
         return np.asarray(scores)

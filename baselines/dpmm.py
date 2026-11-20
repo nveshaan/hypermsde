@@ -72,6 +72,9 @@ def memory_efficient(base):
 
 class DPMM:
     requires_support = True
+    # The patch tokens of an image are the only model inference; the mixture is fit on the support's tokens.
+    encode_keys = ("backbone", "resolution")
+    fingerprint_extra = {}
 
     def __init__(self, repo_url, repo_dir, device="auto", backbone="dinov2_vits14", resolution=448,
                  max_num_components=500, update_rate=0.2, schedule="ema", covariance_type="diag",
@@ -98,7 +101,6 @@ class DPMM:
             T.ToTensor(),
             T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
         ])
-        self.mixture = None
 
     @torch.inference_mode()
     def _features(self, image) -> torch.Tensor:
@@ -109,11 +111,14 @@ class DPMM:
         tokens = self.backbone.get_intermediate_layers(x)[0]
         return F.normalize(tokens, dim=2)[0].float().cpu()
 
-    def fit(self, images) -> None:
+    def encode(self, images) -> list:
+        return [self._features(image).numpy() for image in images]
+
+    def fit(self, images, encoded) -> "Fitted":
         torch.manual_seed(self.seed)
-        features = [self._features(image) for image in images]
+        features = [torch.from_numpy(item) for item in encoded]
         dim = features[0].shape[1]
-        self.mixture = self.mixture_cls(D=dim, device="cpu", **self.mixture_kwargs)
+        mixture = self.mixture_cls(D=dim, device="cpu", **self.mixture_kwargs)
         order = list(range(len(features)))
         rng = random.Random(self.seed)
         for epoch in range(self.epochs):
@@ -121,13 +126,21 @@ class DPMM:
             for start in range(0, len(order), self.batch_size):
                 batch = torch.cat([features[i] for i in order[start:start + self.batch_size]])
                 if epoch == 0 and start == 0:
-                    self.mixture.initialize(batch)
-                self.mixture.step(batch)
+                    mixture.initialize(batch)
+                mixture.step(batch)
+        return Fitted(mixture, self.weight_threshold, self.top_fraction)
 
-    def score(self, images) -> np.ndarray:
+
+class Fitted:
+    """DPMM fitted on one support: the scorer of the encoded images."""
+
+    def __init__(self, mixture, weight_threshold, top_fraction):
+        self.mixture, self.weight_threshold, self.top_fraction = mixture, weight_threshold, top_fraction
+
+    def score_encoded(self, items) -> np.ndarray:
         scores = []
-        for image in images:
-            distance = self.mixture.cosine_distance_to_nearest_cluster(self._features(image),
+        for item in items:
+            distance = self.mixture.cosine_distance_to_nearest_cluster(torch.from_numpy(item),
                                                                        weight_threshold=self.weight_threshold)
             top = max(1, int(len(distance) * self.top_fraction))
             scores.append(float(distance.topk(top).values.mean()))

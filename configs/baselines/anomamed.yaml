@@ -20,3 +20,5 @@ opacity: [0.5, 1.0]                # not in paper: blending opacity delta, drawn
 perlin_threshold: 0.5              # not in paper
 perlin_max_scale: 6                # not in paper: Perlin periods 2^[0, 6)
 device: auto
+# Per-image model output kept on disk if true: CLIP tokens of 3 layers, 3 x 257 x 1024 floats = 3 MB/image: 480 GB. Every (K, seed) of a run shares one pass over the images either way.
+cache_encodings: false

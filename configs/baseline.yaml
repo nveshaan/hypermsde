@@ -25,6 +25,14 @@ load_chunk: 256   # images held in memory at once
 # the data and passed to the method's fit(). The same draw as scripts/run_hypermsde.py. 0 = zero-shot.
 support: 0
 support_seed: ${seed}
+# Few-shot, many supports in one pass over the images (each is encoded once, however many supports score it):
+# lists of K and of support seeds, every pair run. null = the single `support` / `support_seed` above.
+supports: null
+support_seeds: null
+# Per-image model outputs ("encodings") reused across runs, for the baselines whose config says `cache_encodings: true`
+# (the others' are too large for the disk, see their configs). null = no disk cache.
+cache_dir: experiments/cache
+encode_chunk: 16   # images encoded, then scored by every support, at a time (memory only)
 
 # Class name AdaCLIP prompts with, per modality.
 class_names:

@@ -11,6 +11,11 @@ from baselines.common import choose_device, prepare_repo, select_checkpoint
 
 
 class AdaCLIP:
+    # The prompts are learned jointly with the image tower: the encoding of an image is its score.
+    encode_keys = ("checkpoint", "class_name", "image_size", "backbone", "prompting_depth", "prompting_length",
+                   "prompting_type", "prompting_branch", "use_hsf", "k_clusters")
+    fingerprint_extra = {}
+
     def __init__(self, checkpoint, checkpoints, repo_url, repo_dir, weights_repo, class_name="object",
                  device="auto", image_size=518, backbone="ViT-L-14-336", prompting_depth=4, prompting_length=5,
                  prompting_type="SD", prompting_branch="VL", use_hsf=True, k_clusters=20, batch_size=16, **_):
@@ -37,11 +42,15 @@ class AdaCLIP:
         self.model.eval()
 
     @torch.no_grad()
-    def score(self, images) -> np.ndarray:
-        scores = []
+    def encode(self, images) -> list:
+        items = []
         for i in range(0, len(images), self.batch_size):
             batch = images[i:i + self.batch_size]
             x = torch.stack([self.model.preprocess(img) for img in batch]).to(self.device)
             _, anomaly_score = self.model.clip_model(x, [self.class_name] * len(batch), aggregation=True)
-            scores.append(anomaly_score.float().cpu().numpy())
-        return np.concatenate(scores)
+            items.extend(np.atleast_1d(anomaly_score.float().cpu().numpy()).reshape(-1, 1))
+        return items
+
+    @staticmethod
+    def score_encoded(items) -> np.ndarray:
+        return np.concatenate(items)

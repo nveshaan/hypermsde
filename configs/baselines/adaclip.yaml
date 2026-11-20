@@ -20,3 +20,5 @@ prompting_branch: VL
 use_hsf: true
 k_clusters: 20
 batch_size: 1   # AdaCLIP's text encoder does not support batches (TODO in the authors' code)
+# Disk cache of the per-image model output (one float per image), reused by every later run (see cache_dir in configs/baseline.yaml).
+cache_encodings: true

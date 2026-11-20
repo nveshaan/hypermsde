@@ -14,3 +14,5 @@ depth: 9
 n_ctx: 12
 t_n_ctx: 4
 seed: 111
+# Disk cache of the per-image model output (one float per image), reused by every later run (see cache_dir in configs/baseline.yaml).
+cache_encodings: true

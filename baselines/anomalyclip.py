@@ -10,6 +10,11 @@ from baselines.common import choose_device, prepare_repo, select_checkpoint
 
 
 class AnomalyCLIP:
+    # The image feature is the same for every prompt checkpoint (they only change the text side), so it is what is
+    # cached: another checkpoint costs no image inference.
+    encode_keys = ("image_size", "features_list", "depth", "n_ctx", "t_n_ctx")
+    fingerprint_extra = {}
+
     def __init__(self, checkpoint, checkpoints, repo_url, repo_dir, device="auto", image_size=518,
                  features_list=(6, 12, 18, 24), depth=9, n_ctx=12, t_n_ctx=4, batch_size=16, seed=111, **_):
         repo = prepare_repo(repo_url, repo_dir)
@@ -47,12 +52,17 @@ class AnomalyCLIP:
         self.preprocess = preprocess
 
     @torch.no_grad()
-    def score(self, images) -> np.ndarray:
-        scores = []
+    def encode(self, images) -> list:
+        """The normalised image feature (D,) of every image."""
+        items = []
         for i in range(0, len(images), self.batch_size):
             x = torch.stack([self.preprocess(img) for img in images[i:i + self.batch_size]]).to(self.device)
             feats, _ = self.model.encode_image(x, self.features_list, DPAM_layer=20)
             feats = feats / feats.norm(dim=-1, keepdim=True)
-            probs = (feats.float() @ self.text.T / 0.07).softmax(-1)[:, 1]
-            scores.append(probs.cpu().numpy())
-        return np.concatenate(scores)
+            items.extend(feats.float().cpu().numpy())
+        return items
+
+    @torch.no_grad()
+    def score_encoded(self, items) -> np.ndarray:
+        feats = torch.from_numpy(np.stack(items)).to(self.device)
+        return (feats @ self.text.T / 0.07).softmax(-1)[:, 1].cpu().numpy()

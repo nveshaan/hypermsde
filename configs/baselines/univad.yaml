@@ -13,3 +13,7 @@ grounding:
   mri: {box_threshold: 0.2, text_threshold: 0.2, text_prompt: "MRI", background_prompt: ""}
   oct: {box_threshold: 0.35, text_threshold: 0.35, text_prompt: "Retina . object ", background_prompt: ""}
   fundus: {box_threshold: 0.35, text_threshold: 0.35, text_prompt: "Retina . object ", background_prompt: ""}   # not the authors'
+# Nothing to cache on disk: the masks are cached by content (in the authors' repo) and the networks' outputs on a
+# query are memoised in memory, so every (K, seed) of a run shares one pass over the images.
+cache_encodings: false
+memo_size: 64   # results of each network kept in memory; keep at least encode_chunk (configs/baseline.yaml)

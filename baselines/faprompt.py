@@ -10,6 +10,11 @@ from baselines.common import choose_device, prepare_repo, select_checkpoint
 
 
 class FAPrompt:
+    # The re-prompting with the most abnormal patches ties the image side to the checkpoint's prompts: the encoding
+    # of an image is its score.
+    encode_keys = ("checkpoint", "image_size", "features_list", "depth", "n_ctx", "t_n_ctx")
+    fingerprint_extra = {}
+
     def __init__(self, checkpoint, checkpoints, repo_url, repo_dir, device="auto", image_size=518,
                  features_list=(6, 12, 18, 24), depth=9, n_ctx=12, t_n_ctx=4, seed=111, **_):
         repo = prepare_repo(repo_url, repo_dir)
@@ -80,5 +85,9 @@ class FAPrompt:
         max_score = (2 * max_score1 + max_score2) / 3
         return float((0.5 * (probs + max_score)).mean())
 
-    def score(self, images) -> np.ndarray:
-        return np.asarray([self._score_one(image) for image in images])
+    def encode(self, images) -> list:
+        return [np.array([self._score_one(image)]) for image in images]
+
+    @staticmethod
+    def score_encoded(items) -> np.ndarray:
+        return np.concatenate(items)

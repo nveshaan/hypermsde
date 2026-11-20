@@ -16,3 +16,5 @@ batch_size: 12             # images per DPMM update step
 weight_threshold: 1.0e-6   # components with smaller weight are ignored when scoring
 top_fraction: 0.01         # image score: mean of the top 1% patch scores (AnomalyDINO); not in the DPMM code
 seed: 0
+# Per-image model output kept on disk if true: patch tokens, ~1024 x 384 floats = 1.5 MB/image: 240 GB for all images. Every (K, seed) of a run shares one pass over the images either way.
+cache_encodings: false

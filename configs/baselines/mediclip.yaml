@@ -8,3 +8,5 @@ config: config/chexpert.yaml
 epochs: null   # null = the config's (200)
 device: auto
 seed: 100      # the configs' random_seed
+# Per-image model output kept on disk if true: CLIP tokens of 3 layers, 3 x 257 x 1024 floats = 3 MB/image: 480 GB. Every (K, seed) of a run shares one pass over the images either way.
+cache_encodings: false

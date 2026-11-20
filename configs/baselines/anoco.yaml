@@ -10,3 +10,5 @@ blur_kernel: 7
 blur_sigma: 0.8
 query_chunk: 256   # query patches processed at once (memory only)
 device: auto
+# Per-image model output kept on disk if true: patch features, 2304 x 1024 floats = 9.4 MB/image: 1.5 TB for all 156k images. Every (K, seed) of a run shares one pass over the images either way.
+cache_encodings: false

@@ -28,6 +28,11 @@ def prepare(repo_url: str, repo_dir: str) -> Path:
 
 
 class AACLIP:
+    # The adapters change both towers: the encoding of an image is its score. The adapter file (trained locally,
+    # possibly again into the same folder) is part of the key.
+    encode_keys = ("checkpoint", "class_name", "image_size", "text_adapt_weight", "image_adapt_weight",
+                   "text_adapt_until", "image_adapt_until", "relu")
+
     def __init__(self, checkpoint, repo_url, repo_dir, class_name="object", device="auto", image_size=518,
                  text_adapt_weight=0.1, image_adapt_weight=0.1, text_adapt_until=3, image_adapt_until=6,
                  relu=False, batch_size=8, seed=111, **_):
@@ -57,6 +62,7 @@ class AACLIP:
         if text_file.is_file():
             self.model.text_adapter.load_state_dict(torch.load(text_file, map_location="cpu")["text_adapter"])
         # The last epoch's image adapter (test.py evaluates every saved epoch).
+        self.fingerprint_extra = {"adapter": image_files[-1].name, "trained": image_files[-1].stat().st_mtime_ns}
         self.model.image_adapter.load_state_dict(torch.load(image_files[-1], map_location="cpu")["image_adapter"])
 
         # Prompted with the modality's class name, registered as a one-class dataset of the authors' prompt code.
@@ -72,13 +78,17 @@ class AACLIP:
         ])
 
     @torch.no_grad()
-    def score(self, images) -> np.ndarray:
-        scores = []
+    def encode(self, images) -> list:
+        items = []
         for i in range(0, len(images), self.batch_size):
             x = torch.stack([self.preprocess(img) for img in images[i:i + self.batch_size]]).to(self.device)
             patch_features, _ = self.model(x)
             maps = [self.similarity_map(f, self.text, self.image_size, test=True, domain="Medical")
                     for f in patch_features]
             maps = torch.cat(maps, dim=1).sum(1)
-            scores.append(maps.flatten(1).max(1).values.float().cpu().numpy())
-        return np.concatenate(scores)
+            items.extend(maps.flatten(1).max(1).values.float().cpu().numpy().reshape(-1, 1))
+        return items
+
+    @staticmethod
+    def score_encoded(items) -> np.ndarray:
+        return np.concatenate(items)

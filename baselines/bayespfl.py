@@ -17,6 +17,11 @@ from baselines.common import (choose_device, download_openai_clip, prepare_repo,
 
 
 class BayesPFL:
+    # The prompt flows are sampled: the encoding of an image is its score, and the seed is part of the key.
+    encode_keys = ("checkpoint", "class_name", "image_size", "features_list", "prompt_context_len", "prompt_num",
+                   "prompt_state_len", "sample_num", "num_flows", "seed")
+    fingerprint_extra = {}
+
     def __init__(self, checkpoint, checkpoints, repo_url, repo_dir, class_name="object", device="auto",
                  image_size=518, features_list=(6, 12, 18, 24), prompt_context_len=5, prompt_num=3,
                  prompt_state_len=5, sample_num=10, num_flows=10, seed=333, **_):
@@ -73,5 +78,9 @@ class BayesPFL:
         probs = torch.stack([pro_img[0, :r], pro_img[0, r:]], dim=1).softmax(-1)[:, 1]
         return float(probs.mean())
 
-    def score(self, images) -> np.ndarray:
-        return np.asarray([self._score_one(image) for image in images])
+    def encode(self, images) -> list:
+        return [np.array([self._score_one(image)]) for image in images]
+
+    @staticmethod
+    def score_encoded(items) -> np.ndarray:
+        return np.concatenate(items)

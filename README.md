@@ -123,6 +123,8 @@ uv run python scripts/run_baseline.py baselines=anomalyclip baselines.checkpoint
 
 Checkpoints are chosen with `baselines.checkpoint`; selecting one the authors did not release (e.g. `medical` for AnomalyCLIP and FAPrompt) fails with the list of available ones. AdaCLIP's released weights were all trained on industrial and medical data (`mvtec_colondb`, `visa_clinicdb`, `all`).
 
+**Encodings are never computed twice.** Each baseline splits its work into `encode` (the model on an image) and a cheap head on the result. A few-shot baseline is given lists, `supports=[1,2,4,8,16] support_seeds=[0,1,2,3,4]`, and runs every (K, seed) in one pass over the images: each image is encoded once and scored by all the supports (the support images are encoded once and kept in memory). The zero-shot baselines also keep each image's output on disk under `experiments/cache/` (`cache_dir`; AnomalyCLIP's is the image feature, so another checkpoint costs no image inference). The few-shot baselines' outputs are 1.5-9 MB per image, so `cache_encodings: false` in their configs; set it to `true` to keep them on disk too.
+
 Runs go to the `baseline` MLflow experiment with the same metrics as HyperMSDE (including `*_flipped` and per-subtype). Params are only dataset, modality, method, seed and sample counts; the checkpoint is a tag, and the resolved configs are stored under `configs/` as artifacts.
 
 ## Acknowledgements

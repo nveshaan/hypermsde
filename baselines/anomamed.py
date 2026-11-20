@@ -106,6 +106,10 @@ class PromptLearner(nn.Module):
 
 class AnomaMed:
     requires_support = True
+    # The frozen CLIP's tokens of an image at `layers` are the only inference on the images to score; the fusion
+    # modules and prompts trained on the support read them.
+    encode_keys = ("clip_model", "layers", "image_size")
+    fingerprint_extra = {}
 
     def __init__(self, clip_model="ViT-L/14", layers=(12, 20, 24), image_size=224, n_ctx=12, n_heads=8,
                  class_names=("healthy", "disease"), temperature=0.07, epochs=200, batch_size=8, lr=1e-3,
@@ -184,22 +188,40 @@ class AnomaMed:
         return blended, mask
 
     # ---- model ---------------------------------------------------------------------------------------------
-    def _maps(self, x):
-        """S_n, S_a (B, 2, H, W): Eq. 4 per layer, upsampled and averaged."""
+    def _tokens_of(self, x):
+        """The CLIP tokens (B, L, D) at each of `layers` of the images `x`."""
         with torch.no_grad():
             self.clip.encode_image(self.normalize(x))
-        text = self.prompts()  # (2, C)
+        return [self._tokens[layer].permute(1, 0, 2).float() for layer in self.layers]  # NLD
+
+    def _maps_of(self, tokens, fusion, prompts):
+        """S_n, S_a (B, 2, H, W): Eq. 4 per layer, upsampled and averaged."""
+        text = prompts()  # (2, C)
         maps = []
-        for layer, fuse in zip(self.layers, self.fusion):
-            tokens = self._tokens[layer].permute(1, 0, 2)[:, 1:].float()  # NLD without CLS
-            side = int(math.sqrt(tokens.shape[1]))
-            z = fuse(tokens.transpose(1, 2).reshape(len(x), -1, side, side))
+        for layer_tokens, fuse in zip(tokens, fusion):
+            layer_tokens = layer_tokens[:, 1:]  # without CLS
+            side = int(math.sqrt(layer_tokens.shape[1]))
+            z = fuse(layer_tokens.transpose(1, 2).reshape(len(layer_tokens), -1, side, side))
             z = F.normalize(z, dim=1)
             logits = torch.einsum("bchw,kc->bkhw", z, text) / self.temperature
             maps.append(F.interpolate(logits.softmax(1), size=self.image_size, mode="bilinear", align_corners=True))
         return torch.stack(maps).mean(0)
 
-    def fit(self, images) -> None:
+    def _pixels(self, images):
+        return torch.stack([T.functional.to_tensor(img.convert("RGB").resize(
+            (self.image_size, self.image_size), Image.BICUBIC)) for img in images])
+
+    @torch.no_grad()
+    def encode(self, images) -> list:
+        """The tokens at each of `layers` of every image, as a tuple of (L, D) arrays."""
+        items = []
+        for i in range(0, len(images), self.batch_size):
+            x = self._pixels(images[i:i + self.batch_size]).to(self.device)
+            tokens = [t.cpu().numpy() for t in self._tokens_of(x)]
+            items.extend(tuple(t[b] for t in tokens) for b in range(len(tokens[0])))
+        return items
+
+    def fit(self, images, encoded=None) -> "Fitted":
         random.seed(self.seed)
         np.random.seed(self.seed)
         torch.manual_seed(self.seed)
@@ -207,18 +229,18 @@ class AnomaMed:
         rng = np.random.default_rng(self.seed)
         width = self.clip.visual.transformer.width
         embed = self.clip.text_projection.shape[1]
-        self.fusion = nn.ModuleList([
+        fusion = nn.ModuleList([
             nn.Sequential(nn.Conv2d(width, embed, 1), nn.Conv2d(embed, embed, 3, padding=1), nn.ReLU())
             for _ in self.layers
         ]).to(self.device)
-        self.prompts = PromptLearner(self.clip, self.class_names, self.n_ctx, self.n_heads).to(self.device)
-        optimizer = torch.optim.Adam(list(self.fusion.parameters()) + list(self.prompts.parameters()), lr=self.lr)
+        prompts = PromptLearner(self.clip, self.class_names, self.n_ctx, self.n_heads).to(self.device)
+        optimizer = torch.optim.Adam(list(fusion.parameters()) + list(prompts.parameters()), lr=self.lr)
 
         normals = [T.functional.to_tensor(img.convert("RGB").resize((self.image_size, self.image_size),
                                                                      Image.BICUBIC)) for img in images]
         sources = self._ddpm_sources(images, generator)
-        self.fusion.train()
-        self.prompts.train()
+        fusion.train()
+        prompts.train()
         for _ in range(self.epochs):
             order = rng.permutation(len(normals))
             for start in range(0, len(order), self.batch_size):
@@ -232,19 +254,29 @@ class AnomaMed:
                         batch.append(blended)
                         masks.append(mask)
                 x, y = torch.stack(batch).to(self.device), torch.stack(masks).to(self.device)
-                maps = self._maps(x)
+                maps = self._maps_of(self._tokens_of(x), fusion, prompts)
                 loss = focal_loss(maps, y) + dice_loss(maps[:, 1], y)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-        self.fusion.eval()
-        self.prompts.eval()
+        fusion.eval()
+        prompts.eval()
+        return Fitted(self, fusion, prompts)
+
+
+class Fitted:
+    """AnomaMed trained on one support: the scorer of the encoded images."""
+
+    def __init__(self, method, fusion, prompts):
+        self.method, self.fusion, self.prompts = method, fusion, prompts
 
     @torch.no_grad()
-    def score(self, images) -> np.ndarray:
-        scores = []
-        for i in range(0, len(images), self.batch_size):
-            x = torch.stack([T.functional.to_tensor(img.convert("RGB").resize(
-                (self.image_size, self.image_size), Image.BICUBIC)) for img in images[i:i + self.batch_size]])
-            scores.append(self._maps(x.to(self.device))[:, 1].flatten(1).max(1).values.cpu().numpy())
+    def score_encoded(self, items) -> np.ndarray:
+        method, scores = self.method, []
+        for i in range(0, len(items), method.batch_size):
+            batch = items[i:i + method.batch_size]
+            tokens = [torch.from_numpy(np.stack([item[layer] for item in batch])).to(method.device)
+                      for layer in range(len(batch[0]))]
+            maps = method._maps_of(tokens, self.fusion, self.prompts)
+            scores.append(maps[:, 1].flatten(1).max(1).values.cpu().numpy())
         return np.concatenate(scores)

@@ -2,6 +2,7 @@
 
 Example: python scripts/run_baseline.py baselines=adaclip modality=chest dataset=VinCXR
 Few-shot: python scripts/run_baseline.py baselines=anoco modality=chest support=4 support_seed=0
+Many supports in one pass (each image is encoded once): ... supports=[1,2,4,8,16] support_seeds=[0,1,2,3,4]
 """
 import argparse
 import sys
@@ -32,6 +33,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from baselines.cache import EncodingCache, Encodings  # noqa: E402
 from datasets.embeds import _balanced_cap_indices  # noqa: E402
 from datasets.raw import MODALITY_DATASETS, RawDataset  # noqa: E402
 from run_hypermsde import dataset_names, detection_metrics, select_support  # noqa: E402
@@ -52,6 +54,37 @@ def raw_dataset(cfg: DictConfig, name: str) -> RawDataset:
     return cls(config["sources"][name], transform=None, **kwargs)
 
 
+class Run:
+    """One (K, support seed) evaluation of a dataset: its support, its evaluated samples and their scores."""
+
+    def __init__(self, k, seed, keep, labels_keep):
+        self.k, self.seed = k, seed
+        self.support_index = None   # indices into the dataset
+        pos = np.arange(len(keep))
+        if k > 0:
+            chosen, rest = select_support(labels_keep, k, seed)
+            if chosen is None:
+                self.skip = f"support={k} needs more normal samples (has {(labels_keep == 0).sum()})"
+                return
+            # Normal samples drawn as support are removed from the evaluated samples, as in run_hypermsde.py.
+            self.support_index, pos = keep[chosen], rest
+        self.pos, self.labels = pos, labels_keep[pos]
+        self.y = (self.labels != 0).astype(int)
+        n, n_anomalies = len(self.y), int(self.y.sum())
+        self.skip = (f"needs both normal and anomalous samples (n={n}, anomalies={n_anomalies})"
+                     if n_anomalies in (0, n) else None)
+        self.mask = np.zeros(len(keep), dtype=bool)
+        self.mask[pos] = True
+        self.score = np.full(len(keep), np.nan)
+        self.head = None
+
+
+def encoding_settings(cfg: DictConfig, method, overrides: dict) -> dict:
+    """The settings of the baseline that change its encodings (the part of its config named by `encode_keys`)."""
+    params = {**OmegaConf.to_container(cfg.baselines, resolve=True), **overrides}
+    return {**{key: params[key] for key in method.encode_keys if key in params}, **method.fingerprint_extra}
+
+
 def run_dataset(cfg: DictConfig, name: str) -> None:
     root = Path(cfg.data_root)
     root = root if root.is_absolute() else PROJECT_ROOT / root
@@ -62,20 +95,19 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
     # Same samples as run_hypermsde.py (SingleEmbedsDataset applies the cap exactly like this).
     keep = (_balanced_cap_indices(all_labels, cfg.cap, cfg.seed)
             if cfg.cap is not None and len(all_labels) > cfg.cap else np.arange(len(all_labels)))
-    labels = all_labels[keep]
-    support_index = None
-    if cfg.support > 0:
-        chosen, rest = select_support(labels, cfg.support, cfg.support_seed)
-        if chosen is None:
-            print(f"[skip] {name}: support={cfg.support} needs more normal samples (has {(labels == 0).sum()})")
-            return
-        # Normal samples drawn as support are removed from the evaluated samples, as in run_hypermsde.py.
-        support_index = keep[chosen]
-        keep, labels = keep[rest], labels[rest]
-    y = (labels != 0).astype(int)
-    n, n_anomalies = len(y), int(y.sum())
-    if n_anomalies == 0 or n_anomalies == n:
-        print(f"[skip] {name}: needs both normal and anomalous samples (n={n}, anomalies={n_anomalies})")
+    labels_keep = all_labels[keep]
+
+    # Every (K, seed) listed is evaluated in one pass over the images: each is encoded once, whatever their number.
+    ks = [int(k) for k in (cfg.supports if cfg.supports is not None else [cfg.support])]
+    seeds = [int(s) for s in (cfg.support_seeds if cfg.support_seeds is not None else [cfg.support_seed])]
+    if len(set(k > 0 for k in ks)) > 1:
+        raise ValueError("supports mixes zero-shot (0) and few-shot (> 0) runs")
+    runs = [Run(k, s, keep, labels_keep) for k in ks for s in (seeds if ks[0] > 0 else seeds[:1])]
+    for run in runs:
+        if run.skip:
+            print(f"[skip] {name}: K={run.k} seed={run.seed}: {run.skip}")
+    runs = [run for run in runs if not run.skip]
+    if not runs:
         return
 
     overrides = {"class_name": cfg.class_names[cfg.modality]} if "class_name" in cfg.baselines else {}
@@ -83,17 +115,43 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         overrides["modality"] = cfg.modality
     method = hydra.utils.instantiate(cfg.baselines, **overrides)
     few_shot = getattr(method, "requires_support", False)
-    if few_shot != (support_index is not None):
+    if few_shot != (ks[0] > 0):
         raise ValueError(f"{cfg.baselines.name} is a {'few' if few_shot else 'zero'}-shot baseline, "
                          f"run it with {'support > 0' if few_shot else 'support=0'}")
-    if few_shot:
-        method.fit([Image.open(raw.paths[i]).convert("RGB") for i in support_index])
-    score = np.empty(n, dtype=np.float64)
-    for start in range(0, n, cfg.load_chunk):
-        chunk = [raw.paths[i] for i in keep[start:start + cfg.load_chunk]]
-        images = [Image.open(path).convert("RGB") for path in chunk]
-        score[start:start + len(images)] = method.score(images)
 
+    def load_images(indices):
+        return [Image.open(raw.paths[i]).convert("RGB") for i in indices]
+
+    cache = None
+    if cfg.cache_dir is not None and cfg.baselines.get("cache_encodings", False):
+        cache_root = Path(cfg.cache_dir)
+        cache = EncodingCache(cache_root if cache_root.is_absolute() else PROJECT_ROOT / cache_root,
+                              cfg.baselines.name, encoding_settings(cfg, method, overrides), cfg.modality, name)
+    encodings = Encodings(method.encode, load_images, cache)
+    if few_shot:
+        # The support images are encoded once, pinned in memory, and not encoded again when they are scored for
+        # the runs they are not support of.
+        encodings.pin(sorted({int(i) for run in runs for i in run.support_index}))
+        for run in runs:
+            run.head = method.fit(load_images(run.support_index), encodings.get(run.support_index))
+    else:
+        runs[0].head = method
+
+    needed = np.flatnonzero(np.any([run.mask for run in runs], axis=0))
+    for start in range(0, len(needed), cfg.encode_chunk):
+        block = needed[start:start + cfg.encode_chunk]
+        items = encodings.get(keep[block])
+        for run in runs:
+            chosen = np.flatnonzero(run.mask[block])
+            if len(chosen):
+                run.score[block[chosen]] = run.head.score_encoded([items[j] for j in chosen])
+    for run in runs:
+        log_run(cfg, name, keep, run)
+
+
+def log_run(cfg: DictConfig, name: str, keep: np.ndarray, run: Run) -> None:
+    labels, y, score = run.labels, run.y, run.score[run.pos]
+    n, n_anomalies = len(y), int(y.sum())
     metrics = detection_metrics(y, score)
     subtypes = [int(c) for c in np.unique(labels) if c != 0]
     subtype_counts = {c: int((labels == c).sum()) for c in subtypes} if len(subtypes) > 1 else {}
@@ -102,16 +160,18 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         metrics.update(detection_metrics((labels[sub] == c).astype(int), score[sub], prefix=f"subtype_{c}/"))
 
     label = cfg.baselines.name + ("" if cfg.baselines.get("checkpoint") is None else f"-{cfg.baselines.checkpoint}")
-    if support_index is not None:
-        label += f"-K{cfg.support}-s{cfg.support_seed}"
+    if run.support_index is not None:
+        label += f"-K{run.k}-s{run.seed}"
+    run_cfg = OmegaConf.merge(cfg, {"support": run.k, "support_seed": run.seed, "supports": None,
+                                    "support_seeds": None})
     with mlflow.start_run(run_name=f"{cfg.modality}-{name}-{label}"):
         mlflow.log_params({
             "dataset": name,
             "modality": cfg.modality,
             "method": cfg.baselines.name,
             "seed": cfg.seed,
-            "support": cfg.support,
-            "support_seed": cfg.support_seed,
+            "support": run.k,
+            "support_seed": run.seed,
             "n_samples": n,
             "n_anomalies": n_anomalies,
             **{f"n_subtype_{c}": count for c, count in subtype_counts.items()},
@@ -119,14 +179,14 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         if cfg.baselines.get("checkpoint") is not None:
             mlflow.set_tag("checkpoint", cfg.baselines.checkpoint)
         mlflow.log_metrics(metrics, step=0)
-        mlflow.log_dict(OmegaConf.to_container(cfg, resolve=True), "configs/config.yaml")
+        mlflow.log_dict(OmegaConf.to_container(run_cfg, resolve=True), "configs/config.yaml")
         mlflow.log_dict(OmegaConf.to_container(cfg.baselines, resolve=True), "configs/baseline.yaml")
         # Per-sample scores, with each sample's label and its index into the dataset's labels.npy (and, with
         # support, the support samples' indices).
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "scores.npz"
-            extra = {"support_index": support_index} if support_index is not None else {}
-            np.savez(path, score=score, label=labels, index=keep, **extra)
+            extra = {"support_index": run.support_index} if run.support_index is not None else {}
+            np.savez(path, score=score, label=labels, index=keep[run.pos], **extra)
             mlflow.log_artifact(str(path), "scores")
     print(f"{cfg.modality}/{name}/{label}: " + " ".join(f"{k}={v:.4f}" for k, v in metrics.items() if "/" not in k))
     for c, count in subtype_counts.items():
