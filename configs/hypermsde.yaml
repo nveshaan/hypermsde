@@ -6,6 +6,7 @@ defaults:
   - weight: default
   - stability: default
   - metric: default
+  - shift: default
   - bias: default
   - step: default
   - override hydra/job_logging: disabled

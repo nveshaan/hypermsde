@@ -1,0 +1,4 @@
+# HyperMSDE's built-in shift: a step of learning_rate towards the weighted mean of the selected neighbours (src.hypermsde.Shift).
+name: default
+fn:
+  _target_: src.hypermsde.Shift

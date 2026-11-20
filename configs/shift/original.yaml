@@ -1,0 +1,4 @@
+# The HyperMSDE paper's shift (arXiv:2602.03293). It is the mean shift of the default, so this points to the default for now.
+name: original
+fn:
+  _target_: src.hypermsde.Shift

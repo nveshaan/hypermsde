@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from datasets.embeds import SingleEmbedsDataset  # noqa: E402
 
-COMPONENTS = ("density", "score", "weight", "stability", "metric", "bias", "step")
+COMPONENTS = ("density", "score", "weight", "stability", "metric", "bias", "step", "shift")
 SUPPORT_COMPONENTS = ("bias", "step")  # used only with support > 0
 
 
@@ -130,7 +130,7 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         _, metric, _ = model(
             X, labels=run_labels, support=support, dist=cfg.dist, density_fn=fns["density"], score_fn=fns["score"],
             weight_fn=fns["weight"], stability_fn=fns["stability"],
-            metric_fn=fns["metric"], bias_fn=fns["bias"], step_fn=fns["step"], sphere=stage_spheres,
+            metric_fn=fns["metric"], bias_fn=fns["bias"], step_fn=fns["step"], shift_fn=fns["shift"], sphere=stage_spheres,
         )
         score = metric.detach().cpu().numpy()
         scores.append(score)

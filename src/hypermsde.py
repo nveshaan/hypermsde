@@ -19,16 +19,17 @@ movement converges. The pipeline, in the order ``HypersphericalMeanShiftDensityE
 3. **Select neighbours**: every other point is scored by ``Score`` (distance x density x stability)
    and the ``k``
    best-scoring ones are kept. A dense, stable point can outrank a closer, sparse one.
-4. **Step**: each point moves a fraction ``learning_rate`` towards the weighted mean of its selected neighbours
-   (weights from ``Weight``), computed with one sparse matmul ``W @ X``, plus the bias of the support
-   points if any are given (``bias_fn``); with ``sphere`` it is then put back on the sphere.
+4. **Shift**: each point moves a fraction ``learning_rate`` towards the weighted mean of its selected neighbours
+   (weights from ``Weight``), computed with one sparse matmul ``W @ X`` (the default ``Shift``, replaceable
+   through ``shift_fn``), plus the bias of the support points if any are given (``bias_fn``); with ``sphere`` it
+   is then put back on the sphere.
 5. **Repeat** (optionally re-selecting neighbours every ``recompute_neighbors`` iterations) until the mean
    per-point movement drops below ``shift_threshold`` or ``max_iters_shift`` is reached.
 
 Stability scores (values in [0, 1], higher = more stable) start at 1.0 for every point. Pass a ``stability_fn`` to
 ``forward`` and they are updated after every iteration from the previous and moved positions; the updated scores feed
 the next neighbour weights and, whenever neighbours are reselected, the selection score. The density, the selection score, the
-neighbour weights and the stability update can each be replaced by a ``Component`` (a class that carries its own
+neighbour weights, the shift and the stability update can each be replaced by a ``Component`` (a class that carries its own
 parameters and a ``static`` flag) passed to ``forward``; all of them receive the index of the current iteration and the
 iteration cap, so they can change over the run, and the UMAP fuzzy graph that was built for the density. ``forward`` also
 creates one empty dict before the first iteration; all the components receive it and return it (updated) with their result, so they
@@ -36,7 +37,7 @@ can remember things across calls and share them.
 
 Support points (``support``, e.g. known normal embeddings for few-shot inference) act as high-mass points: every
 iteration ``bias_fn`` turns the feature-wise differences between them and the points into a bias added to every
-point's step, and ``step_fn``, if given, moves them; otherwise they stay where they are. They interact with the
+point's shift, and ``step_fn``, if given, moves them; otherwise they stay where they are. They interact with the
 points only through the bias.
 
 Only torch is required.
@@ -125,7 +126,7 @@ def _call_with_memory(fn, args, memory, name):
 
 
 class Component:
-    """Base class of everything ``forward`` calls: the density, score, weight, stability, metric, bias and step.
+    """Base class of everything ``forward`` calls: the density, score, weight, shift, stability, metric, bias and step.
 
     ``static`` tells ``forward`` how often the component has to run (it can be overridden per instance with
     ``Component(static=...)``):
@@ -133,12 +134,14 @@ class Component:
     - density: ``True`` evaluates it once, at the first iteration; ``False`` at the start of every iteration.
     - weight: ``True`` prepares the neighbour weights only when neighbours are selected; ``False`` at every iteration.
     - stability, step: ``True`` means it never changes anything, so ``forward`` does not call it.
+    - shift: informational (always called: the default has to run; return ``(None, memory)`` to move nothing).
     - score: ``True`` selects neighbours only once, at the first iteration, whatever ``recompute_neighbors`` says.
     - metric, bias: informational (always called when due).
 
     Any component may return ``(None, memory)`` to skip that call (e.g. depending on ``iteration`` and ``n_iters``):
     density keeps the previous density, score keeps the current neighbours (no reselection), weight keeps the previous
-    weights, stability keeps the scores, metric adds nothing, bias is zero and step moves nothing. Density, score and
+    weights, stability keeps the scores, metric adds nothing, bias is zero, step moves nothing (the support points)
+    and shift moves nothing (the points). Density, score and
     weight have nothing to keep on the first call, and a weight has nothing consistent to keep right after neighbours
     were selected: ``None`` there raises a ``ValueError``.
 
@@ -604,7 +607,7 @@ def prepare_weights(indices, dist, density, stability, h, weight_fn, valid, n, i
 
 
 # ---------------------------------------------------------------------------------------------------------
-# 5. Step: the weighted mean, and the pull and step of the support points
+# 5. Shift: the weighted-mean shift of the points, and the pull and step of the support points
 # ---------------------------------------------------------------------------------------------------------
 @torch.no_grad()
 def weighted_mean(X, indices, w, W, chunk_size=DEFAULT_CHUNK_SIZE):
@@ -619,6 +622,29 @@ def weighted_mean(X, indices, w, W, chunk_size=DEFAULT_CHUNK_SIZE):
     return out
 
 
+class Shift(Component):
+    """The default shift of the points: the mean shift, a step of ``learning_rate`` towards the weighted mean of
+    the selected neighbours, ``x + learning_rate * (mean(x) - x)``.
+
+    A replacement has the signature
+    ``shift(x, x0, mean, indices, w, density, stability, h, learning_rate, iteration, n_iters, graph, memory)
+    -> (moved, memory)``, where ``x`` and ``x0`` are the (n, d) current and initial points (``x0`` is the
+    normalised start state, in the same space as ``x``), ``indices`` and ``w`` the (n, k) selected neighbours and
+    their normalised weights, ``density`` and ``stability`` are (n,), ``h`` is the kernel width in use, and
+    ``mean(P)`` returns the (n, d) weighted mean of the neighbours' rows of ``P`` (an (n, d) tensor, e.g. ``x`` or
+    ``x0``) with one sparse matmul; a point without weight gets its own row of ``P``. ``mean`` is lazy: a shift that
+    does not call it pays nothing. It returns the (n, d) new positions, finite. Afterwards ``forward`` keeps the
+    points without weight in place, adds the bias of the support, and puts the points back on the sphere.
+
+    It is not static, and ``static`` has no skip meaning here: a shift is always called.
+    """
+
+    @torch.no_grad()
+    def __call__(self, x, x0, mean, indices, w, density, stability, h, learning_rate, iteration, n_iters, graph,
+                 memory):
+        return x + learning_rate * (mean(x) - x), memory
+
+
 class Bias(Component):
     """The default pull of the support points on the points (the bias used when ``support`` is given).
 
@@ -628,7 +654,7 @@ class Bias(Component):
     A replacement must have the same call signature and also return the memory,
     ``bias(dist, density, stability, h, learning_rate, iteration, n_iters, memory) -> (bias, memory)``, where
     ``dist`` is the (s, n, d) difference ``support[j] - x[i]`` and ``bias`` the (n, d) vector added to every
-    point's step.
+    point's shift.
     """
 
     def __call__(self, dist, density, stability, h, learning_rate, iteration, n_iters, memory):
@@ -808,6 +834,7 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         self.metric = Metric()
         self.stability = Stability()
         self.step = Step()
+        self.shift = Shift()
         self.score = Score(distance_strength, density_strength, stability_strength)
         self.bias = Bias()
         self.weight = Weight(density_strength, stability_strength)
@@ -889,7 +916,7 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
 
     @torch.no_grad()
     def forward(self, X, labels=None, support=None, dist="euclidean", density_fn=None, score_fn=None, weight_fn=None,
-                stability_fn=None, metric_fn=None, bias_fn=None, step_fn=None, sphere=None):
+                stability_fn=None, metric_fn=None, bias_fn=None, step_fn=None, shift_fn=None, sphere=None):
         """Run HyperMSDE and return ``(shifted, metric, trajectory)``.
 
         Every ``*_fn`` is an instance of ``Component`` (a class with a ``static`` flag, see ``Component``).
@@ -938,12 +965,20 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
             ``bias_fn(dist, density, stability, h, learning_rate, iteration, n_iters, memory)``, where ``dist`` is
             the (s, n, d) tensor of feature-wise differences ``support[j] - x[i]`` at the current positions,
             ``density`` and ``stability`` are (n,) and ``h`` the kernel width in use. It returns a finite (n, d)
-            bias, added to every point's step outside the learning rate:
+            bias, added to every point's shift outside the learning rate:
             ``x + learning_rate * (mean - x) + bias``.
         step_fn : optional Component
             Moves the support points, with the same arguments as ``bias_fn`` (evaluated at the same positions,
-            before the step). It returns a finite (s, d) step added to the support. Without one (``Step``, static)
+            before the shift). It returns a finite (s, d) step added to the support. Without one (``Step``, static)
             the support stays where it is. Requires ``support``.
+        shift_fn : optional Component
+            Replaces the shift of the points (see ``Shift``; ``src.shift.Original`` is the paper's). It is called
+            every iteration, after the bias and the step of the support, as
+            ``shift_fn(x, x0, mean, indices, w, density, stability, h, learning_rate, iteration, n_iters, graph,
+            memory)`` where ``mean(P)`` is the weighted mean of the selected neighbours' rows of ``P``. It returns
+            the (n, d) new positions (``None`` moves nothing); ``forward`` then keeps the points without weight in
+            place, adds the bias and puts the points back on the sphere. Without one, ``Shift`` is used:
+            ``x + learning_rate * (mean(x) - x)``.
         sphere : optional dict ``{stage: mode}``
             The space (0 raw, 1 unit, 2 mean-subtracted, 3 Fréchet-centred, see the ``sphere`` of the model) in
             which a stage sees the points. ``stage`` is ``"graph"``, ``"density"``, ``"score"`` or ``"weight"``;
@@ -982,11 +1017,13 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
         metric_fn = _resolve(metric_fn, self.metric, "metric_fn")
         bias_fn = _resolve(bias_fn, self.bias, "bias_fn")
         step_fn = _resolve(step_fn, self.step, "step_fn")
+        shift_fn = _resolve(shift_fn, self.shift, "shift_fn")
         spaces = self._check_sphere(sphere, {"density": density_fn, "score": score_fn, "weight": weight_fn})
         n_iters = self.max_iters_shift
 
         # 1. Normalise: the loop state, and the spaces of the stages that have one of their own.
         x, self.center_ = _normalise(X, self.sphere)
+        x0 = x.clone()                                                       # the initial points, for shifts anchored to them
         frozen = {self.sphere: x}                                            # sphere 2, 3: the raw points in each mode, made once
 
         def points(stage):
@@ -1062,9 +1099,24 @@ class HypersphericalMeanShiftDensityEnhancement(torch.nn.Module):
                     w, W = new_w, new_W
                     unweighted = w.sum(dim=1) == 0                           # no weight at all: the point stays put
 
-            # 5. Step
-            mean = torch.where(unweighted.unsqueeze(1), x, weighted_mean(x, indices, w, W, chunk_size=self.chunk_size))
-            moved = x + self.learning_rate * (mean - x)
+            # 5. Shift
+            def mean(P, indices=indices, w=w, W=W, unweighted=unweighted):
+                """Weighted mean of the selected neighbours' rows of ``P``; a point with no weight keeps its own row."""
+                return torch.where(unweighted.unsqueeze(1), P,
+                                   weighted_mean(P, indices, w, W, chunk_size=self.chunk_size))
+
+            moved, memory = _call_with_memory(
+                shift_fn, (x, x0, mean, indices, w, density, stability, h, self.learning_rate, iteration, n_iters, graph),
+                memory, "the shift function")
+            if moved is None:                                                # skipped: nothing moves
+                moved = x
+            elif (not isinstance(moved, torch.Tensor) or tuple(moved.shape) != tuple(x.shape)
+                  or not bool(torch.isfinite(moved).all())):
+                raise ValueError(f"the shift function must return a finite tensor of shape {tuple(x.shape)}; "
+                                 f"got {tuple(getattr(moved, 'shape', ()))}")
+            else:
+                moved = moved.to(device=x.device, dtype=x.dtype)
+            moved = torch.where(unweighted.unsqueeze(1), x, moved)            # no weight at all: the point stays put
             if support is not None:
                 bias, support, memory = self._support_pull(
                     support, x, density, stability, h, iteration, n_iters, memory, bias_fn, step_fn)
