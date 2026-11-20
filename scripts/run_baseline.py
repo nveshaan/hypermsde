@@ -128,16 +128,27 @@ def run_dataset(cfg: DictConfig, name: str) -> None:
         cache = EncodingCache(cache_root if cache_root.is_absolute() else PROJECT_ROOT / cache_root,
                               cfg.baselines.name, encoding_settings(cfg, method, overrides), cfg.modality, name)
     encodings = Encodings(method.encode, load_images, cache)
+    needed = np.flatnonzero(np.any([run.mask for run in runs], axis=0))
     if few_shot:
         # The support images are encoded once, pinned in memory, and not encoded again when they are scored for
         # the runs they are not support of.
         encodings.pin(sorted({int(i) for run in runs for i in run.support_index}))
-        for run in runs:
-            run.head = method.fit(load_images(run.support_index), encodings.get(run.support_index))
+    if getattr(method, "encode_first", False):
+        # Baselines with a separate model for the encoding: every image is encoded before the models of the next
+        # stage are loaded, and the encoder is released, so the models never share the memory.
+        for start in range(0, len(needed), cfg.encode_chunk):
+            encodings.pin(keep[needed[start:start + cfg.encode_chunk]])
+        method.release_encoder()
+    if few_shot:
+        fit_many = getattr(method, "fit_many", None) or (
+            lambda images, encoded: [method.fit(i, e) for i, e in zip(images, encoded)])
+        heads = fit_many([load_images(run.support_index) for run in runs],
+                         [encodings.get(run.support_index) for run in runs])
+        for run, head in zip(runs, heads):
+            run.head = head
     else:
         runs[0].head = method
 
-    needed = np.flatnonzero(np.any([run.mask for run in runs], axis=0))
     for start in range(0, len(needed), cfg.encode_chunk):
         block = needed[start:start + cfg.encode_chunk]
         items = encodings.get(keep[block])

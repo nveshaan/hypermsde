@@ -22,7 +22,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms as T
 
-from baselines.common import choose_device
+from baselines.common import choose_device, free_memory
 
 CLIP_MEAN, CLIP_STD = (0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)
 
@@ -137,13 +137,16 @@ class AnomaMed:
                 lambda _m, _i, out, layer=layer: self._tokens.__setitem__(layer, out))
 
     # ---- AABM ----------------------------------------------------------------------------------------------
-    @torch.no_grad()
-    def _ddpm_sources(self, images, generator):
-        """Anomaly source P per image: forward diffusion to step t, reverse with variance (1 + s) Sigma."""
+    def _load_ddpm(self):
         from diffusers import DDPMPipeline
 
         pipe = DDPMPipeline.from_pretrained(self.ddpm_name)
-        unet, scheduler = pipe.unet.to(self.device).eval(), pipe.scheduler
+        return pipe.unet.to(self.device).eval(), pipe.scheduler
+
+    @torch.no_grad()
+    def _ddpm_sources(self, images, generator, ddpm):
+        """Anomaly source P per image: forward diffusion to step t, reverse with variance (1 + s) Sigma."""
+        unet, scheduler = ddpm
         size = unet.config.sample_size
         alphas_cumprod = scheduler.alphas_cumprod.to(self.device)
         betas = scheduler.betas.to(self.device)
@@ -168,7 +171,6 @@ class AnomaMed:
                 x = mean + ((1 + s) * variance).sqrt() * z
             source = ((x.clamp(-1, 1) + 1) / 2)[0].cpu()
             sources.append(T.functional.resize(source, [self.image_size, self.image_size], antialias=True))
-        del pipe, unet
         return sources
 
     def _blend(self, image, source, rng):
@@ -221,11 +223,22 @@ class AnomaMed:
             items.extend(tuple(t[b] for t in tokens) for b in range(len(tokens[0])))
         return items
 
-    def fit(self, images, encoded=None) -> "Fitted":
+    def fit_many(self, images_list, encoded_list=None) -> list:
+        """One `Fitted` per support. The models run one at a time: the DDPM makes the anomaly sources of every
+        support (loaded once, CLIP off the device), is freed, and only then is CLIP back for the training."""
+        self.clip.to("cpu")
+        ddpm = self._load_ddpm()
+        sources = [self._ddpm_sources(images, torch.Generator().manual_seed(self.seed), ddpm)
+                   for images in images_list]
+        del ddpm
+        free_memory(self.device)
+        self.clip.to(self.device)
+        return [self._train(images, source) for images, source in zip(images_list, sources)]
+
+    def _train(self, images, sources) -> "Fitted":
         random.seed(self.seed)
         np.random.seed(self.seed)
         torch.manual_seed(self.seed)
-        generator = torch.Generator().manual_seed(self.seed)
         rng = np.random.default_rng(self.seed)
         width = self.clip.visual.transformer.width
         embed = self.clip.text_projection.shape[1]
@@ -238,7 +251,6 @@ class AnomaMed:
 
         normals = [T.functional.to_tensor(img.convert("RGB").resize((self.image_size, self.image_size),
                                                                      Image.BICUBIC)) for img in images]
-        sources = self._ddpm_sources(images, generator)
         fusion.train()
         prompts.train()
         for _ in range(self.epochs):

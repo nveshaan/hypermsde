@@ -1,4 +1,5 @@
 """Shared helpers for the inference-only baselines: device choice, vendored repos and checkpoints."""
+import gc
 import os
 import subprocess
 import sys
@@ -19,6 +20,15 @@ def choose_device(name: str = "auto") -> str:
         os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
         return "mps"
     return "cpu"
+
+
+def free_memory(device: str) -> None:
+    """Return the memory of models that were just deleted to the device."""
+    gc.collect()
+    if device.startswith("cuda"):
+        torch.cuda.empty_cache()
+    elif device.startswith("mps"):
+        torch.mps.empty_cache()
 
 
 def prepare_repo(url: str, repo_dir: str) -> Path:

@@ -5,6 +5,9 @@ As in the authors' pipeline, every image (support and query) is first segmented 
 the references of UniVAD.setup. The masks are cached by image content, so they are computed once per image.
 Image-level score: the model's pred_score.
 
+The models run in two stages, never together: GroundingDINO + SAM-HQ segment every image first (`encode`, then
+`release_encoder` frees them), and only then are UniVAD's own CLIP, DINOv2 and DINO featurizer loaded (`fit`).
+
 The authors' forward runs the CLIP, DINOv2 and DINO networks on the query inside the same function that compares it
 with the support. To score one image against several supports without running them again, their calls are
 memoised by input (`memoize`), and the state `setup` leaves on the model is kept per support (`Fitted`).
@@ -27,7 +30,7 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms as T
 
-from baselines.common import choose_device, prepare_repo, redirect_cuda
+from baselines.common import choose_device, free_memory, prepare_repo, redirect_cuda
 
 CHECKPOINTS = {
     "sam_hq_vit_h.pth": "https://huggingface.co/lkeab/hq-sam/resolve/main/sam_hq_vit_h.pth",
@@ -149,6 +152,7 @@ class UniVAD:
     # memoised in memory.
     encode_keys = ("image_size", "grounding", "modality")
     fingerprint_extra = {}
+    encode_first = True   # segment every image (GroundingDINO + SAM-HQ) before CLIP and DINOv2 are loaded
 
     def __init__(self, repo_url, repo_dir, grounding, modality="chest", device="auto", image_size=448, seed=0,
                  memo_size=64, **_):
@@ -188,14 +192,27 @@ class UniVAD:
             sam = functools.cache(segmentation.sam_hq_model_registry["vit_h"])
             segmentation.sam_hq_model_registry = {**segmentation.sam_hq_model_registry, "vit_h": sam}
             self.segment = segmentation.grounding_segmentation
-            self.model = module.UniVAD(image_size=image_size).to(self.device)
-        # The networks run on the query inside the authors' forward; keep their outputs for the next support.
-        self.model.clip_model.encode_image = memoize(self.model.clip_model.encode_image, memo_size)
-        self.model.dinov2_net.forward_features = memoize(self.model.dinov2_net.forward_features, memo_size)
-        self.model.dino_net.forward = memoize(self.model.dino_net.forward, memo_size)
-        extractor = self.model.component_feature_extractor
-        extractor.extract = memoize(extractor.extract, memo_size)
+        self.segmentation_models = [segmentation.load_model, sam]
+        self.module, self.memo_size, self.seed, self.model = module, memo_size, seed, None
         self.transform = T.Compose([T.Resize((image_size, image_size)), T.ToTensor()])
+
+    def release_encoder(self) -> None:
+        """Free GroundingDINO and SAM-HQ once every image is segmented; UniVAD's own networks load after."""
+        for cached in self.segmentation_models:
+            cached.cache_clear()
+        free_memory(self.device)
+
+    def _build_model(self) -> None:
+        """CLIP, DINOv2 and the DINO featurizer, loaded when the first support is set up (after the segmentation)."""
+        torch.manual_seed(self.seed)
+        with contextlib.chdir(self.repo), cuda_alias(self.device):
+            self.model = self.module.UniVAD(image_size=self.image_size).to(self.device)
+        # The networks run on the query inside the authors' forward; keep their outputs for the next support.
+        self.model.clip_model.encode_image = memoize(self.model.clip_model.encode_image, self.memo_size)
+        self.model.dinov2_net.forward_features = memoize(self.model.dinov2_net.forward_features, self.memo_size)
+        self.model.dino_net.forward = memoize(self.model.dino_net.forward, self.memo_size)
+        extractor = self.model.component_feature_extractor
+        extractor.extract = memoize(extractor.extract, self.memo_size)
 
     def _paths(self, images) -> list[str]:
         """Each image saved under the repo's data/ (named by content) and segmented if not done yet. The returned
@@ -204,8 +221,9 @@ class UniVAD:
         for image in images:
             name = hashlib.sha1(np.asarray(image).tobytes()).hexdigest()
             path = f"./data/delta/{self.data_dir.name}/{name}.png"
-            if not (self.repo / "masks" / "delta" / self.data_dir.name / name / "grounding_mask.png").exists():
+            if not (self.repo / path).exists():
                 image.save(self.repo / path)
+            if not (self.repo / "masks" / "delta" / self.data_dir.name / name / "grounding_mask.png").exists():
                 todo.append(path)
             paths.append(path)
         if todo:
@@ -214,16 +232,18 @@ class UniVAD:
         return paths
 
     def encode(self, images) -> list:
-        """The image and the path of its saved copy, whose masks have been computed: the networks run in the
+        """The path of the saved copy of every image, whose masks have been computed: the other networks run in the
         forward of `Fitted`, memoised."""
-        return [(np.asarray(image), np.array(path)) for image, path in zip(images, self._paths(images))]
+        return [np.array(path) for path in self._paths(images)]
 
     def fit(self, images, encoded) -> "Fitted":
+        if self.model is None:
+            self._build_model()
         samples = torch.stack([self.transform(image) for image in images]).to(self.device)
         before = dict(vars(self.model))
         with contextlib.chdir(self.repo), cuda_alias(self.device):
             self.model.setup({"few_shot_samples": samples, "dataset_category": self.category,
-                              "image_path": [str(path) for _, path in encoded]})
+                              "image_path": [str(path) for path in encoded]})
         self._concatenate_leftovers()
         # What setup left on the model (the support's features, its gate, ...), to put back before scoring. A later
         # setup replaces these objects rather than editing them, so the references stay valid.
@@ -257,7 +277,8 @@ class Fitted:
         vars(method.model).update(self.state)
         scores = []
         with contextlib.chdir(method.repo), cuda_alias(method.device):
-            for array, path in items:
-                x = method.transform(Image.fromarray(array)).unsqueeze(0).to(method.device)
+            for path in items:
+                image = Image.open(method.repo / str(path)).convert("RGB")
+                x = method.transform(image).unsqueeze(0).to(method.device)
                 scores.append(float(method.model(x, str(path))["pred_score"]))
         return np.asarray(scores)
