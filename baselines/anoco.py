@@ -70,9 +70,9 @@ class ANoCo:
             rn = reference_norm[order]
             w = keep * s_sorted * (2 * qn * rn / (qn ** 2 + rn ** 2))
             # Eq. 9: f~_i = (lambda f_i - (L_qr F_r)_i) / (d_i + lambda), with L_qr = -W and d_i = sum_j w_ij.
-            n_keep = int(keep.sum(1).max())
-            w, idx = w[:, :n_keep], order[:, :n_keep]
-            aggregated = torch.einsum("nk,nkd->nd", w, reference[idx])
+            # (L_qr F_r)_i is the weighted sum of the reference rows. w is zero outside the prefix, so scatter it back
+            # to the reference order and do one matmul: gathering reference[order] would build a (n, N_r, d) tensor.
+            aggregated = torch.zeros_like(s).scatter_(1, order, w) @ reference
             moved = (self.lam * q + aggregated) / (w.sum(1, keepdim=True) + self.lam)
             # Eq. 10: E_i = |f~_i - f_i|^2 (1 - cos(f~_i, f_i))
             energies.append(((moved - q) ** 2).sum(1) * (1 - F.cosine_similarity(moved, q, dim=1)))
